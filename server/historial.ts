@@ -9,6 +9,7 @@ import fs from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import type { VersionSeccion } from '../shared/tipos';
+import { nombreSeguro } from './store';
 
 /** Cambios separados por menos de esto son la misma edición. */
 const VENTANA_MS = 3 * 60_000;
@@ -26,11 +27,11 @@ export class Historial {
   constructor(private raiz: () => string) {}
 
   dirVersiones(dirDoc: string, archivo: string) {
-    return path.join(dirDoc, '.historial', claveSeccion(archivo));
+    return path.join(dirDoc, '.historial', nombreSeguro(claveSeccion(nombreSeguro(archivo))));
   }
 
   rutaOriginal(dirDoc: string, archivo: string) {
-    return path.join(dirDoc, 'original', 'secciones', `${claveSeccion(archivo)}.md`);
+    return path.join(dirDoc, 'original', 'secciones', `${nombreSeguro(claveSeccion(nombreSeguro(archivo)))}.md`);
   }
 
   /** Lee el texto actual de todas las secciones para saber qué había antes del primer cambio. */

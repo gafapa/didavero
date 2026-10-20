@@ -57,7 +57,7 @@ export default function App() {
 function Avisos() {
   const { avisos, quitarAviso } = useCampos('avisos', 'quitarAviso');
   return (
-    <div className="pointer-events-none fixed bottom-4 left-1/2 z-[60] flex -translate-x-1/2 flex-col items-center gap-2">
+    <div aria-live="polite" aria-relevant="additions text" className="pointer-events-none fixed bottom-4 left-1/2 z-[60] flex -translate-x-1/2 flex-col items-center gap-2">
       {avisos.map((a) => (
         <button
           key={a.id}

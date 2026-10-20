@@ -104,7 +104,7 @@ ${mapa}
         'la cobertura del currículo oficial (incluido abajo): qué resultados de aprendizaje, criterios de evaluación o saberes básicos que corresponden a este documento —según su índice y su objetivo— no están tratados o lo están de forma insuficiente. Propón el texto que falta en el lugar adecuado y cita en el motivo el código del criterio (p. ej. «RA2.c» o «CE 3.1»). No exijas lo que pertenece a otros temas',
     };
     const agente: Record<TipoRevision, string> = { estilo: 'estilo', calidad: 'calidad', fuentes: 'fuentes', curriculo: 'curriculo' };
-    const curriculo = tipos.includes('curriculo') ? await this.almacen.leerCurriculo(asig) : '';
+    const curriculo = tipos.includes('curriculo') ? await this.curriculumReference(asig, doc, 40_000) : '';
     if (tipos.includes('curriculo') && !curriculo.trim()) {
       throw new ErrorUsuario('Esta asignatura aún no tiene el currículo oficial. Búscalo en la pestaña «Currículo» de la asignatura.');
     }
@@ -125,8 +125,8 @@ ${mapa}
           tarea: `Revisa estas secciones fijándote en: ${foco[tipo]}.
 ${lista}
 ${tipo === 'curriculo' ? `
-===== Currículo oficial de la asignatura (curriculo.md) =====
-${curriculo.slice(0, 40_000)}
+===== Currículo estructurado activo de la asignatura =====
+${curriculo}
 ===== fin del currículo =====
 ` : ''}
 NO modifiques las secciones: el usuario decidirá qué cambios aceptar. Escribe tus sugerencias en \`${salida}\` con este JSON exacto:

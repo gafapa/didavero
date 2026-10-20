@@ -62,7 +62,7 @@ export function ModalNuevaAsignatura({ abierto, onCerrar }: { abierto: boolean; 
     >
       <form onSubmit={crear} className="space-y-4">
         <SelectorEnsenanza valor={v} onCambio={setV} />
-        <Campo etiqueta="Destinatarios" ayuda="A quién van dirigidos. Cada documento puede indicar otros distintos.">
+        <Campo etiqueta="Destinatarios" ayuda="A quién van dirigidos. Cada conjunto de apuntes puede indicar otros distintos.">
           <AreaTexto
             rows={2}
             value={destinatarios}
@@ -114,7 +114,7 @@ export function ModalNuevoDocumento({ asignatura, onCerrar }: { asignatura?: str
   };
 
   return (
-    <Modal abierto={!!asignatura} onCerrar={onCerrar} titulo="Nuevo documento de apuntes" descripcion={asig ? `En ${asig.nombre}` : undefined}>
+    <Modal abierto={!!asignatura} onCerrar={onCerrar} titulo="Nuevos apuntes" descripcion={asig ? `En ${asig.nombre}` : undefined}>
       <form onSubmit={crear} className="space-y-4">
         <Campo etiqueta="Título">
           <Entrada autoFocus required value={f.titulo} onChange={(e) => setF({ ...f, titulo: e.target.value })} placeholder="Tema 3: La célula" />
@@ -136,7 +136,7 @@ export function ModalNuevoDocumento({ asignatura, onCerrar }: { asignatura?: str
             Cancelar
           </Boton>
           <Boton type="submit" variante="primario" cargando={guardando}>
-            Crear documento
+            Crear apuntes
           </Boton>
         </div>
       </form>

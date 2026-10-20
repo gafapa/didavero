@@ -9,7 +9,7 @@ import { sha256, verifyAssetDigest } from './asset-integrity.mjs';
 
 const args = process.argv.slice(2);
 const checkOnly = args.includes('--check');
-const plataforma = args.find(argument => argument !== '--check') ?? { win32: 'win', darwin: 'mac' }[process.platform] ?? 'linux';
+const plataforma = args.find(argument => argument !== '--check' && argument !== '--') ?? { win32: 'win', darwin: 'mac' }[process.platform] ?? 'linux';
 if (!['win', 'mac', 'linux'].includes(plataforma)) throw new Error('Unsupported binary platform');
 const destino = path.resolve('resources-bin', plataforma);
 const exe = plataforma === 'win' ? '.exe' : '';

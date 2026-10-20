@@ -1,3 +1,4 @@
+import { ENGINE_IDS, ENGINE_NAMES } from '../../../shared/engines';
 import { useEffect, useState } from 'react';
 import { FolderOpen, RefreshCw } from 'lucide-react';
 import type { Ajustes, Motor } from '../../../shared/tipos';
@@ -50,7 +51,7 @@ export function ModalAjustes({ abierto, onCerrar }: { abierto: boolean; onCerrar
   };
 
   return (
-    <Modal abierto={abierto} onCerrar={onCerrar} titulo="Ajustes" descripcion={version && `Apuntes IA ${version}`} ancho={pestana === 'agentes' ? 'max-w-4xl' : 'max-w-2xl'}>
+    <Modal abierto={abierto} onCerrar={onCerrar} titulo="Ajustes" descripcion={version && `Didavero ${version}`} ancho={pestana === 'agentes' ? 'max-w-4xl' : 'max-w-2xl'}>
       <div className="space-y-6">
         <div className="-mt-1 flex gap-1 border-b border-borde">
           {(
@@ -96,7 +97,7 @@ export function ModalAjustes({ abierto, onCerrar }: { abierto: boolean; onCerrar
         <section className="grid grid-cols-2 gap-4">
           <Campo etiqueta="Motor por defecto" ayuda="El que se usa si no eliges otro.">
             <div className="flex gap-1 rounded-lg bg-panel-2 p-1">
-              {(['claude', 'codex'] as Motor[]).map((m) => (
+              {(ENGINE_IDS).map((m) => (
                 <button
                   key={m}
                   type="button"
@@ -106,7 +107,7 @@ export function ModalAjustes({ abierto, onCerrar }: { abierto: boolean; onCerrar
                     motor === m ? 'bg-panel shadow-sm' : 'text-texto-3 hover:text-texto',
                   )}
                 >
-                  {m === 'claude' ? 'Claude' : 'Codex'}
+                  {ENGINE_NAMES[m]}
                 </button>
               ))}
             </div>

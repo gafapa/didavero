@@ -22,6 +22,8 @@ export interface Dependencias {
 }
 
 export interface Lanzamiento {
+  /** Exclude private teaching context from public web research. */
+  publicContext?: boolean;
   agente: string;
   asignatura: string;
   documento?: string;

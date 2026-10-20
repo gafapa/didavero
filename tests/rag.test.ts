@@ -63,3 +63,26 @@ test('Concurrent cold source searches share one index and keep their source labe
   await fs.writeFile(cacheFile,JSON.stringify(cache));
   assert.match((await buscar({documento:directory},'xenobotanical'))[0].texto,/external cache update/);
 });
+
+test('indexing deduplicates concurrent extraction, rebuilds corrupt caches and tolerates a deleted source before stat', async context => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'apuntes-rag-recovery-'));
+  context.after(() => fs.rm(directory, { recursive: true, force: true }));
+  await fs.writeFile(path.join(directory, 'fixture.md'), '# Fictional source\n\nPhotosynthesis fixture.');
+  const first = indexar(directory), second = indexar(directory);
+  assert.equal(first, second); await first;
+  const cache = path.join(directory, '.indice', 'fixture.md.json');
+  for (const damaged of ['{broken', '{}']) {
+    await fs.writeFile(cache, damaged);
+    assert.equal((await indexar(directory))[0].estado, 'indexado');
+    assert.ok(JSON.parse(await fs.readFile(cache, 'utf8')).fragmentos.length > 0);
+  }
+  const original = fs.stat;
+  let removed = false;
+  context.mock.method(fs, 'stat', async (filename: Parameters<typeof fs.stat>[0], ...args: any[]) => {
+    if (!removed && String(filename) === path.join(directory, 'fixture.md')) { removed = true; await fs.unlink(String(filename)); }
+    return (original as any)(filename, ...args);
+  });
+  assert.deepEqual(await indexar(directory), []);
+  assert.equal(removed, true);
+  await assert.rejects(fs.readFile(cache), /ENOENT/);
+});

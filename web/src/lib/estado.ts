@@ -1,7 +1,8 @@
 // Estado global de la interfaz y conexión WebSocket con el servidor.
 import { create } from 'zustand';
 import { useShallow } from 'zustand/react/shallow';
-import type { Ajustes, ContadorTokens, EstadoMotor, MensajeWS, SeleccionTexto, Trabajo, UsoSuscripcion } from '../../../shared/tipos';
+import type { Ajustes, ContadorTokens, EstadoMotor, EventoTrabajo, MensajeWS, SeleccionTexto, Trabajo, UsoSuscripcion } from '../../../shared/tipos';
+import { mergeJobEvents, mergeJobSnapshot, reconnectDelay } from './jobEvents';
 import { api, type AsignaturaResumen } from './api';
 import { avisarTrabajo, avisarUso } from './notificaciones';
 
@@ -127,10 +128,16 @@ window.addEventListener('popstate', () => useEstado.setState({ seleccion: leerHa
 // ---------- WebSocket ----------
 
 let recargaAsignaturas: ReturnType<typeof setTimeout> | undefined;
+let reconnectAttempts = 0;
 
 function conectar() {
   const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
+  const pendingEvents = new Map<string, EventoTrabajo[]>();
+  const changedJobs: Record<string, Trabajo> = Object.create(null);
+  const removedJobs = new Set<string>();
+  let active = true;
   ws.onopen = async () => {
+    reconnectAttempts = 0;
     // Si el servidor se reinició (p. ej. en el modo en vivo), lo que se cargó mientras estaba caído
     // falló: las vistas lo vuelven a pedir
     useEstado.setState((s) => ({ conectado: true, reconexion: s.reconexion + 1 }));
@@ -140,25 +147,36 @@ function conectar() {
     e.cargarAjustes().catch(() => {});
     e.cargarMotores().catch(() => {});
     api.tokens().then((tokens) => useEstado.setState({ tokens })).catch(() => {});
-    const lista = await api.trabajos().catch(() => [] as Trabajo[]);
-    useEstado.setState({ trabajos: Object.fromEntries(lista.map((t) => [t.id, t])) });
+    const lista = await api.trabajos().catch(() => Object.values(useEstado.getState().trabajos));
+    if (!active) return;
+    const merged = mergeJobSnapshot(lista, changedJobs);
+    for (const [id, events] of pendingEvents) if (merged[id]) { merged[id].eventos = mergeJobEvents(merged[id].eventos, events); pendingEvents.delete(id); }
+    for (const id of removedJobs) delete merged[id];
+    useEstado.setState({ trabajos: merged });
   };
   ws.onclose = () => {
+    active = false;
     useEstado.setState({ conectado: false });
-    setTimeout(conectar, 1500);
+    setTimeout(conectar, reconnectDelay(reconnectAttempts++));
   };
   ws.onmessage = (m) => {
-    const msg = JSON.parse(m.data) as MensajeWS;
+    let msg: MensajeWS;
+    try { msg = JSON.parse(m.data); } catch { return; }
+    if (!msg || typeof msg !== 'object' || typeof msg.tipo !== 'string') return;
     const { trabajos, versiones } = useEstado.getState();
     switch (msg.tipo) {
       case 'trabajos-eliminados': {
+        if (!Array.isArray(msg.ids)) return;
         const removedIds = new Set(msg.ids);
+        for (const id of removedIds) { removedJobs.add(id); delete changedJobs[id]; pendingEvents.delete(id); }
         useEstado.setState({ trabajos: Object.fromEntries(Object.entries(trabajos).filter(([id]) => !removedIds.has(id))) });
         break;
       }
       case 'trabajo': {
+        if (!msg.trabajo || typeof msg.trabajo.id !== 'string') return;
         const previo = trabajos[msg.trabajo.id];
-        const t = { ...msg.trabajo, eventos: previo?.eventos ?? [] };
+        const t = { ...msg.trabajo, eventos: mergeJobEvents(msg.trabajo.eventos ?? [], previo?.eventos ?? [], pendingEvents.get(msg.trabajo.id) ?? []) };
+        changedJobs[t.id] = t; removedJobs.delete(t.id); pendingEvents.delete(t.id);
         useEstado.setState({ trabajos: { ...trabajos, [t.id]: t } });
         avisarTrabajo(previo, t, useEstado.getState().trabajos, useEstado.getState().asignaturas);
         if (previo && previo.estado === 'ejecutando' && t.estado === 'ok') {
@@ -169,9 +187,17 @@ function conectar() {
         break;
       }
       case 'evento': {
+        if (typeof msg.id !== 'string' || !msg.evento || typeof msg.evento.texto !== 'string' || typeof msg.evento.t !== 'number') return;
         const t = trabajos[msg.id];
-        if (!t) break;
-        useEstado.setState({ trabajos: { ...trabajos, [t.id]: { ...t, eventos: [...t.eventos, msg.evento].slice(-400) } } });
+        if (!t) {
+          if (removedJobs.has(msg.id)) return;
+          pendingEvents.set(msg.id, mergeJobEvents(pendingEvents.get(msg.id) ?? [], [msg.evento]));
+          if (pendingEvents.size > 100) pendingEvents.delete(pendingEvents.keys().next().value!);
+          break;
+        }
+        const updated = { ...t, eventos: mergeJobEvents(t.eventos, [msg.evento]) };
+        changedJobs[t.id] = updated;
+        useEstado.setState({ trabajos: { ...trabajos, [t.id]: updated } });
         break;
       }
       case 'actualizacion':

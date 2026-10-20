@@ -8,9 +8,10 @@ import path from 'node:path';
 import type { Trabajo } from '../shared/tipos';
 import type { Postproceso } from './agents/cola';
 import { incorporarResultados } from './buscador';
-import { FlujoExamenes } from './fases/examenes';
+import { ProgrammeFlow } from './fases/programme';
 import { instantaneaDocumento } from './fases/utilidades';
 import type { Dependencias } from './fases/utilidades';
+import { ErrorUsuario } from './store';
 
 export type { AmbitoChat, TipoVersion } from './fases/utilidades';
 
@@ -20,10 +21,15 @@ export type { AmbitoChat, TipoVersion } from './fases/utilidades';
  * exámenes);
  * aquí se conectan los manejadores de la cola y se procesan los resultados de los agentes.
  */
-export class Flujo extends FlujoExamenes {
+export class Flujo extends ProgrammeFlow {
   constructor(dep: Dependencias) {
     super(dep);
     dep.cola.manejadores = {
+      antesDeEjecutar: async job => {
+        if (!job.documento || !dep.gastoDocumento) return;
+        const document = await this.almacen.obtenerDocumento(job.asignatura, job.documento);
+        if (document.presupuesto && dep.gastoDocumento(job.asignatura, job.documento) >= document.presupuesto) throw new ErrorUsuario('El apunte ha alcanzado su tope de tokens. Revisa el presupuesto antes de reintentar.');
+      },
       alTerminar: (t, post) => this.postprocesar(t, post),
       alFallar: (t, post) => this.alFallarPost(t, post),
       alReintentar: (t, post) => this.alReintentarPost(t, post),
@@ -34,6 +40,12 @@ export class Flujo extends FlujoExamenes {
   protected postprocesar(t: Trabajo, post: Postproceso): Promise<string | void> {
     const datos = post.datos ?? {};
     switch (post.tipo) {
+      case 'programme-units':
+        return this.acceptProgrammeUnits(t, datos);
+      case 'programme-research':
+        return this.acceptProgrammeResearch(t, datos);
+      case 'programme':
+        return this.acceptProgramme(t, datos);
       case 'busqueda': {
         const dir = this.dirBusqueda(t.asignatura, t.documento);
         return incorporarResultados(dir, path.join(dir, String(datos.salida)), String(datos.consulta)).then((n) =>
@@ -65,10 +77,7 @@ export class Flujo extends FlujoExamenes {
           d.length ? `Hecho. Se han deshecho los cambios fuera de la pestaña «${datos.nombre}»: ${d.join(', ')}` : undefined,
         );
       case 'curriculo':
-        return this.almacen.leerCurriculo(t.asignatura).then((c) => {
-          if (!c.trim()) throw new Error('El agente no ha escrito curriculo.md. Respóndele para que lo haga.');
-          return 'Currículo oficial guardado. Revísalo en la pestaña «Currículo» de la asignatura.';
-        });
+        return this.postStructuredCurriculum(t, datos);
       case 'seleccion':
         return this.postSeleccion(t, datos);
       case 'imagen-web':

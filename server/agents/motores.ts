@@ -51,7 +51,8 @@ export function rutaMotor(motor: Motor): string | undefined {
   if (forzada) return forzada;
   if (!rutasCache.has(motor)) {
     const ruta = enPath(motor) ?? candidatas(motor).find((p) => existsSync(p));
-    rutasCache.set(motor, ruta && motor === 'codex' ? (binarioNativoCodex(ruta) ?? ruta) : ruta);
+    const nativeOpenCode = ruta && WIN && /\.cmd$/i.test(ruta) ? path.join(path.dirname(ruta), 'node_modules', '@opencode', 'cli', 'bin', 'opencode.exe') : undefined;
+    rutasCache.set(motor, motor === 'opencode' && nativeOpenCode && existsSync(nativeOpenCode) ? nativeOpenCode : ruta && motor === 'codex' ? (binarioNativoCodex(ruta) ?? ruta) : ruta);
   }
   return rutasCache.get(motor);
 }
@@ -150,6 +151,11 @@ export async function comprobarMotor(motor: Motor): Promise<EstadoMotor> {
     }
     return { motor, instalado: true, ruta, version, sesion };
   }
+  if (motor === 'opencode') {
+    if (!/\b(?:v)?2\./i.test(version)) return { motor, instalado: true, ruta, version, sesion: false, detalle: 'Esta integración requiere OpenCode 2. Actualiza desde su guía de instalación.' };
+    const models = await openCodeModels();
+    return { motor, instalado: true, ruta, version, sesion: models.length > 0, detalle: models.length ? undefined : 'Configura un proveedor o modelo local en OpenCode y vuelve a comprobar.' };
+  }
   const s = await ejecutar(ruta, ['login', 'status']);
   return { motor, instalado: true, ruta, version, sesion: s.codigo === 0 && /logged in/i.test(s.salida) };
 }
@@ -160,13 +166,13 @@ export function comandoInstalacion(motor: Motor): string {
   if (motor === 'claude') {
     return WIN ? 'irm https://claude.ai/install.ps1 | iex' : 'curl -fsSL https://claude.ai/install.sh | bash';
   }
-  return 'npm install -g @openai/codex';
+  return motor === 'opencode' ? 'npm install -g @opencode/cli' : 'npm install -g @openai/codex';
 }
 
 export function comandoSesion(motor: Motor): string {
   const ruta = rutaMotor(motor) ?? motor;
   const r = WIN ? `& '${ruta}'` : `'${ruta}'`;
-  return motor === 'claude' ? `${r} auth login` : `${r} login`;
+  return motor === 'codex' ? `${r} login` : `${r} auth login`;
 }
 
 /** Abre una terminal del sistema que ejecuta el comando y queda abierta. */
@@ -195,4 +201,18 @@ export function abrirArchivo(ruta: string) {
 export function abrirCarpeta(ruta: string) {
   const cmd = WIN ? 'explorer.exe' : process.platform === 'darwin' ? 'open' : 'xdg-open';
   spawn(cmd, [ruta], { detached: true, stdio: 'ignore' }).unref();
+}
+
+let openCodeModelCache: { executable: string; expires: number; promise: Promise<string[]> } | undefined;
+
+/** Read configured models without making an inference request. */
+export function openCodeModels(): Promise<string[]> {
+  const executable = rutaMotor('opencode');
+  if (!executable) return Promise.resolve([]);
+  if (openCodeModelCache?.executable === executable && openCodeModelCache.expires > Date.now()) return openCodeModelCache.promise;
+  const promise = ejecutar(executable, ['models', '--standalone']).then(({ codigo, salida }) => codigo === 0
+    ? [...new Set(salida.split(/\r?\n/).map((line) => line.trim()).filter((line) => /^[\w.:-]+\/[\w./:#-]+$/.test(line)))].slice(0, 2000)
+    : []);
+  openCodeModelCache = { executable, expires: Date.now() + 60_000, promise };
+  return promise;
 }

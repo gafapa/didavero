@@ -4,6 +4,11 @@ import { autoUpdater } from 'electron-updater';
 import path from 'node:path';
 import { crearServidor } from '../server/index';
 import { isApplicationUrl } from '../server/localSecurity';
+import fs from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { productStoragePaths } from './storagePaths';
+import { load } from 'js-yaml';
+import { hasTrustedUpdatePublisher } from './updatePolicy';
 
 let ventana: BrowserWindow | null = null;
 let servidor: Awaited<ReturnType<typeof crearServidor>> | null = null;
@@ -13,8 +18,9 @@ let servidor: Awaited<ReturnType<typeof crearServidor>> | null = null;
  * datos de la ventana van en «Apuntes IA datos», junto al .exe, para llevarla en una memoria USB.
  * Tiene que decidirse antes de pedir el bloqueo de instancia única, que usa la carpeta userData.
  */
-const DIR_PORTABLE = process.env.PORTABLE_EXECUTABLE_DIR ? path.join(process.env.PORTABLE_EXECUTABLE_DIR, 'Apuntes IA datos') : undefined;
-if (DIR_PORTABLE) app.setPath('userData', path.join(DIR_PORTABLE, '.electron'));
+const storage = productStoragePaths(app.getPath('appData'), app.getPath('documents'), process.env.PORTABLE_EXECUTABLE_DIR, existsSync);
+const DIR_PORTABLE = storage.portable;
+app.setPath('userData', storage.userData);
 // Windows solo muestra los avisos del sistema (notificaciones) de una app con identificador propio
 if (process.platform === 'win32') app.setAppUserModelId('es.apuntesia.app');
 
@@ -28,7 +34,7 @@ if (!app.requestSingleInstanceLock()) {
     }
   });
   app.whenReady().then(iniciar).catch((e) => {
-    dialog.showErrorBox('Apuntes IA no ha podido arrancar', String(e?.stack ?? e));
+    dialog.showErrorBox('Didavero no ha podido arrancar', String(e?.stack ?? e));
     app.quit();
   });
 }
@@ -45,7 +51,7 @@ async function iniciar() {
   Menu.setApplicationMenu(null);
   if (!URL_EN_VIVO) servidor = await crearServidor({
     archivoAjustes: DIR_PORTABLE ? path.join(DIR_PORTABLE, 'ajustes.json') : path.join(app.getPath('userData'), 'ajustes.json'),
-    carpetaDatosPorDefecto: DIR_PORTABLE ? path.join(DIR_PORTABLE, 'apuntes') : path.join(app.getPath('documents'), 'Apuntes IA'),
+    carpetaDatosPorDefecto: storage.data,
     dirEstatico: path.join(__dirname, '..', 'dist-web'),
     dirBin: app.isPackaged
       ? path.join(process.resourcesPath, 'bin')
@@ -61,7 +67,7 @@ async function iniciar() {
     height: 900,
     minWidth: 960,
     minHeight: 600,
-    title: URL_EN_VIVO ? 'Apuntes IA · en vivo' : 'Apuntes IA',
+    title: URL_EN_VIVO ? 'Didavero · en vivo' : 'Didavero',
     backgroundColor: '#0f1117',
     show: false,
     icon: path.join(__dirname, '..', 'build', process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
@@ -96,12 +102,17 @@ async function iniciar() {
   comprobarActualizaciones();
 }
 
-/** Busca versiones nuevas en GitHub Releases y las descarga en segundo plano. */
-function comprobarActualizaciones() {
+/** Signed Windows updates require an explicit install action; other packages use manual releases. */
+async function comprobarActualizaciones() {
   // La portable no se actualiza sola (no hay instalador que sustituir): se descarga la nueva
   if (!app.isPackaged || DIR_PORTABLE) return;
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = false;
+  try {
+    const configuration = load(await fs.readFile(path.join(process.resourcesPath, 'app-update.yml'), 'utf8'));
+    if (!hasTrustedUpdatePublisher(process.platform, configuration)) return;
+  } catch { return; }
   autoUpdater.autoDownload = true;
-  autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.on('update-available', (i) => servidor?.avisarActualizacion('disponible', i.version));
   autoUpdater.on('update-downloaded', (i) => servidor?.avisarActualizacion('descargada', i.version));
   autoUpdater.on('error', (e) => console.warn('Actualizaciones:', e?.message ?? e));

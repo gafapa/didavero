@@ -1,7 +1,9 @@
+import { ENGINE_NAMES } from '../../shared/engines';
 // Base del flujo: dependencias, lanzar agentes, estado del documento y chat libre.
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
+import { writeFileAtomic } from '../atomicFiles';
 import type {
   EstadoFlujo,
   Indice,
@@ -26,6 +28,7 @@ import { asegurarTextos } from '../conversion';
 import { buscar as buscarRag, buscarEnTexto, formatear, hayIndice, indexar } from '../rag';
 import { respuestaEnDossier, textoRestricciones, menorEsfuerzo, AMBITOS, instantaneaDocumento } from './utilidades';
 import type { Dependencias, Lanzamiento, AmbitoChat } from './utilidades';
+import { buildSectionReference } from '../contextSelection';
 
 export class FlujoBase {
   protected candados = new Map<string, Promise<unknown>>();
@@ -49,7 +52,7 @@ export class FlujoBase {
     const info = AGENTES[agente];
     const listos = this.dep.motoresListos();
     if (forzado) {
-      if (!listos.has(forzado)) throw new ErrorUsuario(`Esta tarea necesita ${forzado === 'codex' ? 'Codex' : 'Claude Code'}, que no está disponible`);
+      if (!listos.has(forzado)) throw new ErrorUsuario(`Esta tarea necesita ${ENGINE_NAMES[forzado]}, que no está disponible`);
       return forzado;
     }
     if (info.soloMotor) return info.soloMotor;
@@ -100,23 +103,26 @@ export class FlujoBase {
     const cwd = documento ? this.almacen.dirDocumento(asignatura.id, documento.id) : dirAsig;
     await fs.mkdir(path.join(cwd, '.agentes'), { recursive: true });
     const motor = this.motorPara(l.agente, l.motor);
-    const referencia = await this.contenidoReferencia(asignatura.id, documento?.id, l.incluir);
     // Con fuentes indexadas, el agente recibe la herramienta de búsqueda en lugar de leer documentos enteros
     const carpetas = l.carpetas ?? this.carpetasFuentes(asignatura.id, documento?.id);
     // Lo que la ficha de la asignatura (y la del documento) permite usar a los agentes
     const permisos = permisosEfectivos(asignatura.permisos, documento?.permisos);
+    const referencia = await this.contenidoReferencia(asignatura.id, documento?.id, l.incluir,
+      { folders: carpetas, allowSources: l.fuentes !== false && permisos.fuentes });
     const imagenes = !!l.imagenes && permisos.busquedaImagenes;
     // Calculadora para comprobar ejercicios y datos numéricos (agentes que escriben o revisan contenido)
     const calculo = ['redactor', 'calidad', 'autoevaluacion', 'examinador', 'orquestador', 'fuentes'].includes(l.agente);
     const conIndice = l.fuentes !== false && permisos.fuentes && !!this.dep.mcpFuentes && (await hayIndice(carpetas).catch(() => false));
     const avisoFuentes = conIndice
-      ? '\n\n## Material aportado\nEstá indexado. Para consultarlo usa las herramientas `buscar_en_fuentes` (fragmentos relevantes con archivo y página), `listar_fuentes` y `leer_pagina`. No leas los PDF ni documentos largos enteros: busca lo que necesites. Cita la fuente (archivo y página) cuando uses un dato.'
+      ? '\n\n## Material aportado\nEstá indexado. Usa `buscar_en_fuentes`, `listar_fuentes` y `leer_pagina`. Para consultas concretas, recupera solo lo necesario. Si la tarea exige cobertura completa, inventaría y lee todas las partes del ámbito pedido, por bloques; los primeros resultados no acreditan exhaustividad. Cita archivo y página al usar un dato.'
       : '';
     const { sistema, prompt } = construirPrompt(
       this.instrucciones(l.agente),
-      { asignatura, documento, secciones, seccionActiva: l.seccionActiva },
+      { asignatura: l.agente === 'curriculo' || l.publicContext ? { ...asignatura, contexto: '', destinatarios: '', documentos: [], estilo: '' } : asignatura, documento, secciones, seccionActiva: l.seccionActiva },
       l.tarea + avisoFuentes + textoRestricciones(permisos) + referencia,
       l.indicaciones,
+      l.agente === 'curriculo' ? 'curriculum'
+        : ['investigador', 'arquitecto', 'examinador', 'glosario', 'diagnostico', 'director-visual'].includes(l.agente) ? 'structured' : undefined,
     );
     // Modelo y esfuerzo del agente en el motor con el que va a trabajar (Ajustes › Agentes)
     const elegido = modeloDe(this.dep.ajustes(), l.agente, motor);
@@ -160,23 +166,27 @@ export class FlujoBase {
    * Incluye en el mensaje el texto de los archivos que el agente va a necesitar. Leerlos con
    * herramientas cuesta una vuelta más por archivo, y en cada vuelta se reenvía todo el contexto.
    */
-  protected async contenidoReferencia(asig: string, doc: string | undefined, incluir?: Lanzamiento['incluir']): Promise<string> {
-    if (!incluir || !doc) return '';
+  protected async contenidoReferencia(asig: string, doc: string | undefined, incluir?: Lanzamiento['incluir'],
+    sourceOptions?: { folders: Record<string, string>; allowSources: boolean }): Promise<string> {
+    if (!incluir) return '';
     const partes: string[] = [];
     const MAX_DOSSIER = 40_000;
     const MAX_SECCIONES = 90_000;
-    if (incluir.dossier) {
+    if (doc && incluir.dossier) {
       const d = await this.almacen.leerArchivoDoc(asig, doc, 'investigacion.md');
       // Dossier largo y tarea concreta: solo las partes relevantes (y siempre la lista de fuentes)
       if (incluir.consulta && d.length > 14_000) {
         const partes2 = buscarEnTexto(d, 'investigacion.md', incluir.consulta, 10);
         const fuentes = d.match(/\n## Fuentes[\s\S]*$/)?.[0] ?? '';
-        partes.push(
+        if (partes2.length) partes.push(
           '===== investigacion.md (solo las partes relevantes para esta tarea; el dossier completo está en investigacion.md) =====',
           partes2.map((p) => (p.titulo ? `[${p.titulo}]\n${p.texto}` : p.texto)).join('\n\n[…]\n\n'),
           fuentes.trim(),
           '===== fin del extracto del dossier =====',
         );
+        else partes.push('===== investigacion.md (sin coincidencias: no se presupone ausencia de información) =====',
+          d.length > MAX_DOSSIER ? `${d.slice(0, MAX_DOSSIER)}\n[… PENDIENTE: lee el resto de investigacion.md antes de descartar información]` : d,
+          '===== fin de investigacion.md =====');
       } else if (d.trim()) {
         partes.push(
           '===== investigacion.md =====',
@@ -187,21 +197,34 @@ export class FlujoBase {
     }
     if (incluir.glosario) {
       const g = await this.almacen.leerGlosario(asig);
-      if (g.replace(/^#\s*Glosario\s*/i, '').trim()) partes.push('===== ../../glosario.md =====', g.slice(0, 15_000), '===== fin del glosario =====');
+      if (g.replace(/^#\s*Glosario\s*/i, '').trim()) partes.push('===== ../../glosario.md =====', g.length > 15_000
+        ? `${g.slice(0, 15_000)}\n[… PENDIENTE: lee ../../glosario.md para consultar el resto]` : g, '===== fin del glosario =====');
     }
-    if (incluir.secciones?.length) {
-      const textos = (await this.almacen.textoCompleto(asig, doc)).filter((x) => incluir.secciones!.includes(x.archivo));
-      const total = textos.reduce((n, x) => n + x.texto.length, 0);
-      if (total <= MAX_SECCIONES) {
-        for (const x of textos) partes.push(`===== secciones/${x.archivo} =====`, x.texto, `===== fin de secciones/${x.archivo} =====`);
-      }
+    if (doc && incluir.secciones?.length) {
+      partes.push(await buildSectionReference(incluir.secciones, (filename) => this.almacen.leerSeccion(asig, doc, filename), MAX_SECCIONES));
     }
-    if (incluir.consulta) {
-      const r = await buscarRag(this.carpetasFuentes(asig, doc), incluir.consulta, 6).catch(() => []);
-      if (r.length) partes.push('===== Fragmentos del material aportado más relevantes para esta tarea =====', formatear(r), '===== fin de los fragmentos =====');
+    if (incluir.consulta && sourceOptions?.allowSources !== false) {
+      const r = await buscarRag(sourceOptions?.folders ?? this.carpetasFuentes(asig, doc), incluir.consulta, 6).catch(() => []);
+      if (r.length) partes.push('===== Fragmentos del material aportado más relevantes para esta tarea =====', formatear(r, { subjectLevel: !doc }), '===== fin de los fragmentos =====');
     }
     if (!partes.length) return '';
-    return `\n\n## Contenido actual de los archivos (ya incluido: no hace falta que los leas)\n${partes.join('\n')}`;
+    return `\n\n## Contexto de referencia (no releas lo incluido; consulta lo marcado como pendiente)\n${partes.join('\n')}`;
+  }
+
+  /** Bound inline curriculum context without silently losing the rest of its captured version. */
+  protected async curriculumReference(subjectId: string, documentId?: string, characterLimit = 30_000): Promise<string> {
+    const content = await this.almacen.curriculumPrompt(subjectId);
+    if (content.length <= characterLimit) return content;
+    const digest = createHash('sha256').update(content).digest('hex');
+    const filename = `curriculum-${digest}.md`;
+    const directory = path.join(this.almacen.dirAsignatura(subjectId), '.agentes');
+    await fs.mkdir(directory, { recursive: true });
+    await writeFileAtomic(path.join(directory, filename), content);
+    const prefix = content.slice(0, characterLimit);
+    const boundary = prefix.lastIndexOf('\n\n');
+    const preview = boundary > 0 ? prefix.slice(0, boundary) : '';
+    const reference = `${documentId ? '../../' : ''}.agentes/${filename}`;
+    return `${preview}\n\nPENDIENTE: el currículo tiene ${content.length} caracteres y aquí solo se incluye un extracto. Antes de seleccionar criterios o concluir sobre cobertura, lee el currículo COMPLETO en \`${reference}\`, por bloques si es necesario. Es la instantánea exacta de la versión activa usada en esta tarea; no modifiques ese archivo. Una búsqueda de fragmentos no acredita cobertura completa.`;
   }
 
   /** Ruta (relativa a la carpeta del documento) para el resultado estructurado de un agente. */

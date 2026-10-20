@@ -43,7 +43,7 @@ export function NavegacionDocumento() {
       </button>
       <div className="mx-2 mt-2 font-titulo text-[20px] leading-tight font-bold tracking-tight">{doc?.titulo ?? ''}</div>
       {(gastado > 0 || tope) && (
-        <div className="mx-2 mt-2.5" title="Tokens gastados en este documento (entrada + salida)">
+        <div className="mx-2 mt-2.5" title="Tokens gastados en estos apuntes (entrada + salida)">
           {tope ? (
             <div className="mb-1.5 h-1.5 overflow-hidden rounded-full bg-panel-2">
               <div className={cx('h-full rounded-full', gastado >= tope ? 'bg-error' : 'bg-acento')} style={{ width: `${Math.min(100, Math.max(2, (gastado / tope) * 100))}%` }} />

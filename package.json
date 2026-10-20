@@ -1,8 +1,8 @@
 {
-  "name": "apuntes-ia",
-  "productName": "Apuntes IA",
-  "version": "0.6.0",
-  "description": "Crea apuntes con varios agentes de IA (Claude Code y Codex) trabajando en paralelo",
+  "name": "didavero",
+  "productName": "Didavero",
+  "version": "0.7.0-beta.1",
+  "description": "Create curriculum-linked notes, exams and teaching programmes with configurable AI agents",
   "author": "Pablo Gallego",
   "license": "MIT",
   "private": true,
@@ -25,7 +25,8 @@
     "app": "node scripts/app-en-vivo.mjs",
     "catalogo:fp": "node scripts/catalogo-fp.mjs",
     "iconos": "electron scripts/iconos.mjs",
-    "datos-mapas": "node scripts/datos-mapas.mjs"
+    "datos-mapas": "node scripts/datos-mapas.mjs",
+    "build:site": "node website/build.mjs"
   },
   "dependencies": {
     "@fastify/multipart": "^10.1.3",
@@ -113,7 +114,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/gafapa/apuntes-ia.git"
+    "url": "https://github.com/gafapa/didavero.git"
   },
   "engines": {
     "node": ">=24.0.0"

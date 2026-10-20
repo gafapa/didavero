@@ -9,13 +9,14 @@ import { useEstado, useCampos } from '../lib/estado';
 import { abreviar } from '../lib/formato';
 import { AreaTexto, cx } from './ui';
 
-type Modelos = ModelosDisponibles & { predeterminados: Record<Motor, Record<string, { modelo: string; esfuerzo: Esfuerzo }>> };
+type Modelos = ModelosDisponibles & { predeterminados: Record<Motor, Record<string, { modelo: string; esfuerzo?: Esfuerzo }>> };
 type Config = Pick<Ajustes, 'modoMotor' | 'modelos' | 'agentes'>;
 
 const MOTORES: [NonNullable<Ajustes['modoMotor']>, string, string][] = [
   ['claude', 'Claude Code', '✳'],
   ['codex', 'Codex', '⌘'],
-  ['ambos', 'Ambos', '✳⌘'],
+  ['opencode', 'OpenCode', 'Oc'],
+  ['ambos', 'Por agente', '✳⌘'],
 ];
 const NOMBRE_ESFUERZO: Record<Esfuerzo, string> = { low: 'Bajo', medium: 'Medio', high: 'Alto', xhigh: 'Muy alto', max: 'Máximo' };
 
@@ -64,7 +65,7 @@ export function EditorAgentes() {
   if (!modelos || !config || !agentes.length) return <div className="py-10 text-center text-sm text-texto-3">Cargando agentes…</div>;
 
   const listo = (m: Motor) => !!motores?.find((x) => x.motor === m && x.instalado && x.sesion);
-  const disponible = (k: NonNullable<Ajustes['modoMotor']>) => (k === 'ambos' ? listo('claude') && listo('codex') : listo(k));
+  const disponible = (k: NonNullable<Ajustes['modoMotor']>) => (k === 'ambos' ? motores?.some((engine) => engine.instalado && engine.sesion) : listo(k));
   const motorDe = (ag: InfoAgente): Motor => ag.soloMotor ?? (config.modoMotor === 'ambos' ? (config.agentes[ag.id]?.motor ?? ag.motor) : config.modoMotor!);
   const actualDe = (ag: InfoAgente, m: Motor) => config.modelos?.[m]?.[ag.id] ?? modelos.predeterminados[m][ag.id];
   const fijar = (ag: InfoAgente, m: Motor, cambios: { modelo?: string; esfuerzo?: Esfuerzo }) => {
@@ -116,7 +117,7 @@ export function EditorAgentes() {
         </span>
       </div>
 
-      <section className="grid grid-cols-3 gap-2.5" aria-label="Motor de los agentes">
+      <section className="grid grid-cols-2 gap-2.5 sm:grid-cols-4" aria-label="Motor de los agentes">
         {MOTORES.map(([k, nombre, simbolo]) => {
           const ok = disponible(k);
           const elegido = config.modoMotor === k;
@@ -134,7 +135,7 @@ export function EditorAgentes() {
               <span className="text-lg text-acento-texto">{simbolo}</span>
               <span className="text-sm font-semibold">{nombre}</span>
               <span className="text-[12px] text-texto-3">
-                {ok ? (k === 'ambos' ? 'Cada agente con el motor que elijas' : 'Sesión disponible') : k === 'ambos' ? 'Necesita sesión en los dos' : 'Sin sesión iniciada'}
+                {ok ? (k === 'ambos' ? 'Cada agente con el motor que elijas' : 'Sesión disponible') : k === 'ambos' ? 'Necesita un motor listo' : 'Sin sesión iniciada'}
               </span>
               {elegido && <CheckCircle2 className="absolute top-3 right-3 size-4 text-acento-texto" />}
             </button>
@@ -143,14 +144,14 @@ export function EditorAgentes() {
       </section>
       {!disponible(config.modoMotor ?? 'ambos') && (
         <p className="flex items-center gap-1.5 text-[12.5px] text-error">
-          <AlertCircle className="size-3.5" /> El motor elegido no tiene sesión iniciada: los agentes usarán el otro mientras tanto.
+          <AlertCircle className="size-3.5" /> El motor elegido no tiene sesión iniciada: los agentes usarán otro motor disponible mientras tanto.
         </p>
       )}
 
       <section>
         <h3 className="text-sm font-semibold">Perfil de gasto</h3>
         <p className="mt-1 text-[12.5px] text-texto-2">
-          Rellena el modelo y el esfuerzo de todos los agentes en los dos motores. «Equilibrado» reserva el modelo más capaz para lo que decide el
+          Rellena el modelo y el esfuerzo de todos los agentes en Claude y Codex. OpenCode conserva el modelo que hayas elegido. «Equilibrado» reserva el modelo más capaz para lo que decide el
           resultado y se llama poco (índice director, investigación), usa uno intermedio con esfuerzo alto donde se juega la calidad (redacción,
           revisión de datos) y el más económico para tareas sencillas (glosario, estilo). «Ahorro» recorta donde menos se nota; «Calidad» sube los
           agentes decisivos. Después puedes ajustar cualquier agente.
@@ -187,11 +188,11 @@ export function EditorAgentes() {
             const lista = modelos[m];
             const actual = actualDe(ag, m);
             const modelo = lista.find((x) => x.id === actual?.modelo);
-            const esfuerzos = modelo ? modelo.esfuerzos : modelos.esfuerzos;
+            const esfuerzos = m === 'opencode' ? [] : modelo ? modelo.esfuerzos : modelos.esfuerzos;
             const uso = tokens?.porAgente?.[ag.id];
             const esteAbierto = abierto === ag.id;
             const instrucciones = config.agentes[ag.id]?.instrucciones;
-            const selector = 'h-7 rounded-md border border-borde bg-panel px-1.5 text-[12.5px] outline-none focus:border-acento cursor-pointer';
+            const selector = 'h-7 max-w-[13rem] rounded-md border border-borde bg-panel px-1.5 text-[12.5px] outline-none focus:border-acento cursor-pointer';
             return [
               <tr key={ag.id} className={cx('align-top', !esteAbierto && 'border-b border-borde')}>
                 <td className="py-2 pr-3">
@@ -215,6 +216,7 @@ export function EditorAgentes() {
                     >
                       <option value="claude">Claude Code</option>
                       <option value="codex">Codex</option>
+                      <option value="opencode">OpenCode</option>
                     </select>
                   </td>
                 )}
@@ -223,7 +225,7 @@ export function EditorAgentes() {
                     aria-label={`Modelo de ${ag.nombre}`}
                     className={selector}
                     value={actual?.modelo ?? ''}
-                    title={modelo?.descripcion}
+                    title={modelo?.descripcion ?? actual?.modelo}
                     onChange={(e) => fijar(ag, m, { modelo: e.target.value })}
                   >
                     {!modelo && actual?.modelo && <option value={actual.modelo}>{actual.modelo}</option>}

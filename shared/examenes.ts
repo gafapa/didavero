@@ -64,7 +64,7 @@ export interface OpcionesExamen {
   /** Indicaciones para la IA. */
   indicaciones?: string;
   // En papel
-  /** Espacio para responder bajo cada pregunta (por defecto, sí). */
+  /** Include answer space below each question only when explicitly enabled. */
   espacio?: boolean;
   /** Tabla de calificación por partes en la cabecera (por defecto, sí). */
   tablaNotas?: boolean;
@@ -76,12 +76,36 @@ export interface OpcionesExamen {
   elegir?: Partial<Record<TipoActividad, number>>;
 }
 
+export const EXAM_ADAPTATIONS = [
+  { id: 'easy-reading', name: 'Lectura fácil', description: 'Enunciados breves y claros, con la misma dificultad, contenidos y puntuación.' },
+  { id: 'supported', name: 'Con apoyos', description: 'Instrucciones por pasos y ayudas de formato, sin revelar las respuestas ni cambiar lo que se evalúa.' },
+  { id: 'extension', name: 'Ampliación', description: 'Más profundidad y razonamiento sobre los mismos contenidos, conservando la puntuación.' },
+] as const;
+
+export type ExamAdaptationKind = (typeof EXAM_ADAPTATIONS)[number]['id'];
+
+export interface ExamAdaptationRequest {
+  kind: ExamAdaptationKind;
+  questionIds: string[];
+  instructions?: string;
+}
+
+export interface ExamAdaptation extends ExamAdaptationRequest {
+  sourceExamId: string;
+  sourceTitle: string;
+  sourceUpdatedAt: string;
+  /** Immutable snapshot used to validate and merge the generated questions. */
+  originalQuestions: PreguntaExamen[];
+  completedAt?: string;
+}
+
 export interface Examen {
   id: string;
   titulo: string;
   opciones: OpcionesExamen;
   estado: 'borrador' | 'generando' | 'listo' | 'error';
   error?: string;
+  adaptation?: ExamAdaptation;
   preguntas: PreguntaExamen[];
   creado: string;
   actualizado: string;
@@ -403,7 +427,7 @@ export function examenAMarkdown(ex: Examen, d: Destino = { formato: 'vista' }): 
     if (avisos.length) lineas.push(`*${avisos.join(' ')}*`, '');
     for (const { p, n } of parte.preguntas) {
       const { enunciado, resto } = partesPregunta(p, p.tipo, p.id);
-      const espacio = op.espacio !== false ? espacioRespuesta(p, d) : [];
+      const espacio = op.espacio === true ? espacioRespuesta(p, d) : [];
       lineas.push(`**${n}.** *(${fmtPuntos(p.puntos)} p)* ${enunciado}`, ...(resto.length ? ['', ...resto] : []), ...(espacio.length ? ['', ...espacio] : []), '');
     }
   });

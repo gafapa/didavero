@@ -1,3 +1,4 @@
+import { ENGINE_IDS } from '../../../shared/engines';
 import { useEffect, useState, type ReactNode } from 'react';
 import { AlertCircle, Check, CircleMinus, FileOutput, Globe, KeyRound, RefreshCw } from 'lucide-react';
 import { api } from '../lib/api';
@@ -61,22 +62,22 @@ export function PantallaRequisitos() {
   const listos = motores?.filter((m) => m.instalado && m.sesion) ?? [];
 
   return (
-    <Modal abierto={abierta} onCerrar={cerrar} ancho="max-w-2xl" titulo="Qué necesita Apuntes IA" descripcion="Lo imprescindible para que funcione y lo que activa funciones concretas. Se comprueba en este equipo.">
+    <Modal abierto={abierta} onCerrar={cerrar} ancho="max-w-2xl" titulo="Qué necesita Didavero" descripcion="Lo imprescindible para que funcione y lo que activa funciones concretas. Se comprueba en este equipo.">
       <div className="space-y-5">
         <section>
           <h3 className="mb-1 text-sm font-semibold">Imprescindible</h3>
           <p className="mb-2 text-[12.5px] text-texto-2">
-            Al menos un asistente de IA instalado y con la sesión iniciada. La app usa tu suscripción (Claude Pro o Max, o un plan de ChatGPT); no hace falta ninguna clave de API.
+            Al menos un asistente de IA instalado y con la sesión iniciada. Claude y Codex usan tu cuenta. OpenCode usa el proveedor o modelo local que configures.
           </p>
           <div className="grid gap-2 sm:grid-cols-2">
-            {(['claude', 'codex'] as const).map((m) => {
+            {(ENGINE_IDS).map((m) => {
               const e = motores?.find((x) => x.motor === m);
               return e ? <TarjetaMotor key={m} estado={e} /> : null;
             })}
           </div>
           {motores && !listos.length && (
             <p className="mt-2 flex items-center gap-1.5 text-[12.5px] text-error">
-              <AlertCircle className="size-3.5" /> Ninguno está listo todavía: sin uno de los dos, los agentes no pueden trabajar.
+              <AlertCircle className="size-3.5" /> Ninguno está listo todavía: sin un motor listo, los agentes no pueden trabajar.
             </p>
           )}
           {listos.length === 1 && listos[0].motor === 'claude' && (

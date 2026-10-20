@@ -198,7 +198,7 @@ Transcribe el documento entero aunque sea largo (si hace falta, escribe el archi
     const secciones = (await this.almacen.listarSecciones(asig, doc)).filter((s) => !ARCHIVO_AUTOEVALUACION.test(s.archivo));
     if (!secciones.some((s) => s.palabras > 20)) throw new ErrorUsuario('El documento todavía no tiene texto que diagnosticar');
     const documento = await this.almacen.obtenerDocumento(asig, doc);
-    const curriculo = await this.almacen.leerCurriculo(asig);
+    const curriculo = await this.curriculumReference(asig, doc);
     const salida = this.salida('diagnostico');
     return this.lanzar({
       agente: 'diagnostico',
@@ -232,8 +232,8 @@ Escribe el resultado en \`${salida}\` con este JSON exacto:
   "motivoRecomendacion": "por qué"
 }
 
-Recomendación: «conservador» si basta con corregir y completar sobre el texto actual; «reestructurar» si el contenido es bueno pero la organización no; «reescribir» si conviene rehacerlos usándolos como fuente. Entre 5 y 25 problemas, de más a menos importante.${
-        curriculo.trim() ? `\n\n===== Currículo oficial de la asignatura (curriculo.md) =====\n${curriculo.slice(0, 30_000)}\n===== fin del currículo =====` : ''
+Recomendación: «conservador» si basta con corregir y completar sobre el texto actual; «reestructurar» si el contenido es bueno pero la organización no; «reescribir» si conviene rehacerlos usándolos como fuente. Como máximo 25 problemas, de más a menos importante; si no hay problemas comprobables, deja la lista vacía. No inventes defectos para alcanzar un mínimo. En «resumen» indica cualquier parte que no hayas podido comprobar, sin presentarla como revisada.${
+        curriculo.trim() ? `\n\n===== Currículo estructurado activo de la asignatura =====\n${curriculo}\n===== fin del currículo =====` : ''
       }`,
       post: { tipo: 'diagnostico', datos: { salida } },
     });

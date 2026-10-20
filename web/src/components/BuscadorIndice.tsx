@@ -10,12 +10,16 @@ export function BuscadorIndice({ asignatura, documento }: { asignatura: string; 
   const [consulta, setConsulta] = useState('');
   const [resultados, setResultados] = useState<Resultado[]>();
   const [buscando, setBuscando] = useState(false);
+  const [error, setError] = useState('');
 
   const buscar = async () => {
     if (!consulta.trim()) return setResultados(undefined);
     setBuscando(true);
+    setError('');
     try {
       setResultados(await api.buscarEnFuentes(asignatura, consulta, documento));
+    } catch (failure) {
+      setError((failure as Error).message);
     } finally {
       setBuscando(false);
     }
@@ -30,10 +34,12 @@ export function BuscadorIndice({ asignatura, documento }: { asignatura: string; 
           onChange={(e) => setConsulta(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && buscar()}
           placeholder="Buscar dentro de tus fuentes (lo mismo que consultan los agentes)…"
+          aria-label="Buscar texto en las fuentes"
           className="pl-9"
         />
       </div>
       {buscando && <p className="text-[12px] text-texto-3">Buscando…</p>}
+      {error && <p role="alert" className="text-sm text-error">{error}</p>}
       {resultados && !buscando && (
         <div className="space-y-2">
           {resultados.length === 0 && <p className="text-[12.5px] text-texto-3">Sin resultados.</p>}

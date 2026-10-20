@@ -1,3 +1,4 @@
+import { ENGINE_IDS, ENGINE_NAMES } from '../../../shared/engines';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { Bot, Check, Clock, Crosshair, Image as IconoImagen, RotateCcw, TextSelect, X, ChevronDown, CircleStop, Eraser, Globe, FileEdit, Landmark, Library, Loader2, PanelRightClose, PanelRightOpen, Search, Send, Wrench } from 'lucide-react';
 import type { EventoTrabajo, HerramientasChat, Motor, Trabajo } from '../../../shared/tipos';
@@ -221,7 +222,7 @@ export function PanelAgentes() {
           />
           <div className="flex items-center gap-2 px-2 pb-2">
             <div className="flex items-center gap-0.5 rounded-lg bg-panel-2 p-0.5">
-              {(['claude', 'codex'] as Motor[]).map((m) => (
+              {(ENGINE_IDS).map((m) => (
                 <button
                   key={m}
                   disabled={!disponible(m)}
@@ -232,7 +233,7 @@ export function PanelAgentes() {
                     motorElegido === m ? 'bg-panel text-texto shadow-sm' : 'text-texto-3 hover:text-texto',
                   )}
                 >
-                  {m === 'claude' ? 'Claude' : 'Codex'}
+                  {ENGINE_NAMES[m]}
                 </button>
               ))}
             </div>
@@ -314,7 +315,7 @@ export function PanelAgentes() {
   );
 }
 
-const NOMBRE_MOTOR: Record<Motor, string> = { claude: 'Claude', codex: 'Codex' };
+const NOMBRE_MOTOR: Record<Motor, string> = { claude: 'Claude', codex: 'Codex', opencode: 'OpenCode' };
 
 function horaCorta(ms: number) {
   const d = new Date(ms);
@@ -405,7 +406,7 @@ const TarjetaTrabajo = memo(function TarjetaTrabajo({ t }: { t: Trabajo }) {
         <div className="min-w-0 flex-1">
           <div className="line-clamp-2 text-[13.5px] leading-snug font-semibold">{t.titulo}</div>
           <div className="mt-1 flex flex-wrap items-center gap-x-1.5 whitespace-nowrap text-[11.5px] text-texto-3">
-            <span>{t.nombreAgente}</span>·<span>{t.motor === 'claude' ? 'Claude' : 'Codex'}</span>
+            <span>{t.nombreAgente}</span>·<span>{ENGINE_NAMES[t.motor]}</span>
             {tiempo && <>· <span className="tabular-nums">{tiempo}</span></>}
             {t.tokens && (
               <>

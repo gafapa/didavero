@@ -9,7 +9,7 @@ export function compilarMcp() {
     bundle: true,
     platform: 'node',
     format: 'cjs',
-    target: 'node22',
+    target: 'node24',
     external: ['pdfjs-dist'], // solo lo usa la indexación, no la búsqueda
     logLevel: 'warning',
   });

@@ -24,6 +24,7 @@ import { ARCHIVO_AUTOEVALUACION } from '../../../shared/tipos';
 import { DIFICULTADES, LETRAS, TIPOS_ACTIVIDAD, type TipoActividad } from '../../../shared/actividades';
 import {
   MAX_PREGUNTAS_EXAMEN,
+  EXAM_ADAPTATIONS,
   TIPOS_CON_RUBRICA,
   examenAMarkdown,
   fmtPuntos,
@@ -44,12 +45,14 @@ import {
   type Examen,
   type OpcionesExamen,
   type PreguntaExamen,
+  type ExamAdaptationKind,
 } from '../../../shared/examenes';
 import { api, urlDatos, type FuenteExamen } from '../lib/api';
 import { useCampos } from '../lib/estado';
 import { renderizar } from '../lib/markdown';
 import { AreaTexto, Boton, Entrada, Insignia, Modal, Vacio, confirmar, cx } from './ui';
 import { VistaPrevia } from './VistaPrevia';
+import { ExamAdaptationComparison } from './ExamAdaptationComparison';
 import { SelectorTipos } from './SelectorTipos';
 import { ActividadAgente, fechaCorta } from './flujo/comun';
 
@@ -62,25 +65,42 @@ function useTrabajosExamen(a: string) {
 }
 
 /** Exámenes de la asignatura, con su solucionario y su rúbrica, a partir de sus documentos o de otros archivos. */
-export function PestanaExamenes({ a }: { a: AsignaturaDetalle }) {
+export function PestanaExamenes({ a, onCount }: { a: AsignaturaDetalle; onCount?: (count: number) => void }) {
   const { avisar, versiones, reconexion } = useCampos('avisar', 'versiones', 'reconexion');
   const version = `${versiones[`${a.id}/`] ?? 0}-${reconexion}`;
   const [examenes, setExamenes] = useState<Examen[]>();
   const [abierto, setAbierto] = useState<string>();
   const [nuevo, setNuevo] = useState(false);
+  const [deletingId, setDeletingId] = useState('');
   const enCurso = useTrabajosExamen(a.id);
 
-  useEffect(() => {
-    api.examenes(a.id).then(setExamenes).catch((e) => avisar(e.message, 'error'));
-  }, [a.id, version, avisar]);
+  const loadExams = useCallback(async () => {
+    const result = await api.examenes(a.id);
+    setExamenes(result); onCount?.(result.length);
+  }, [a.id, onCount]);
 
-  if (abierto) return <EditorExamen a={a} id={abierto} onVolver={() => setAbierto(undefined)} />;
+  useEffect(() => {
+    void loadExams().catch((e) => avisar(e.message, 'error'));
+  }, [loadExams, version, avisar]);
+
+  async function deleteExam(exam: Examen) {
+    if (deletingId || !await confirmar(`¿Eliminar «${exam.titulo}»?`, {
+      texto: 'Se moverá el examen completo a la papelera, con sus preguntas, solucionario, rúbrica y archivos. Puedes recuperarlo en Inicio → Papelera.',
+      boton: 'Mover a la papelera', peligro: true,
+    })) return;
+    setDeletingId(exam.id);
+    try { await api.eliminarExamen(a.id, exam.id); await loadExams(); avisar('Examen movido a la papelera.', 'ok'); }
+    catch (error) { avisar((error as Error).message, 'error'); }
+    finally { setDeletingId(''); }
+  }
+
+  if (abierto) return <EditorExamen key={abierto} a={a} id={abierto} onVolver={() => { setAbierto(undefined); void loadExams().catch(error => avisar(error.message, 'error')); }} onOpenExam={setAbierto} />;
   if (!examenes) return null;
 
   return (
     <div className="space-y-4">
       <p className="text-sm text-texto-2">
-        Exámenes con su solucionario y su rúbrica de corrección. Se preparan a partir de los documentos de la asignatura (enteros o algunas secciones), de sus
+        Exámenes con su solucionario y su rúbrica de corrección. Se preparan a partir de los apuntes de la asignatura (enteros o algunas secciones), de sus
         fuentes o de otros archivos que subas solo para el examen: tus apuntes, el libro, exámenes de otros años…
       </p>
       {!examenes.length ? (
@@ -99,13 +119,15 @@ export function PestanaExamenes({ a }: { a: AsignaturaDetalle }) {
           {examenes.map((ex) => {
             const trabajando = ex.estado === 'generando' || enCurso.some((t) => t.ref === ex.id || t.ref?.startsWith(`${ex.id}/`));
             return (
+              <div key={ex.id} className="rounded-xl border border-borde bg-panel shadow-suave transition-colors hover:border-acento/50">
               <button
-                key={ex.id}
                 onClick={() => setAbierto(ex.id)}
-                className="rounded-xl border border-borde bg-panel p-4 text-left shadow-suave transition-all hover:-translate-y-0.5 hover:border-acento/50 cursor-pointer"
+                disabled={deletingId === ex.id}
+                className="w-full rounded-xl p-4 text-left cursor-pointer disabled:cursor-wait"
               >
                 <GraduationCap className="mb-3 size-5 text-acento-texto" />
                 <div className="font-medium leading-snug">{ex.titulo}</div>
+                {ex.adaptation && <p className="mt-1 text-xs text-acento-texto">{EXAM_ADAPTATIONS.find((variant) => variant.id === ex.adaptation!.kind)?.name} · Versión adaptada</p>}
                 <p className="mt-1 text-[13px] text-texto-2">
                   {ex.preguntas.length ? `${ex.preguntas.length} preguntas · ${fmtPuntos(totalExamen(ex))} puntos` : resumenExamen(ex.opciones) || 'Sin preguntas'}
                 </p>
@@ -122,6 +144,8 @@ export function PestanaExamenes({ a }: { a: AsignaturaDetalle }) {
                   ) : null}
                 </div>
               </button>
+              <div className="flex justify-end px-3 pb-3"><Boton tam="sm" variante="fantasma" icono={<Trash2 className="size-3.5" />} aria-label={`Eliminar examen ${ex.titulo}`} title={trabajando ? 'Espera a que termine el agente o cancélalo antes de eliminar.' : undefined} disabled={!!deletingId || trabajando} cargando={deletingId === ex.id} onClick={() => void deleteExam(ex)}>Eliminar</Boton></div>
+              </div>
             );
           })}
           <button
@@ -186,7 +210,7 @@ function ModalNuevoExamen({ onCerrar, onCrear }: { onCerrar: () => void; onCrear
 
 type Apartado = 'preparar' | 'preguntas' | 'vista';
 
-function EditorExamen({ a, id, onVolver }: { a: AsignaturaDetalle; id: string; onVolver: () => void }) {
+function EditorExamen({ a, id, onVolver, onOpenExam }: { a: AsignaturaDetalle; id: string; onVolver: () => void; onOpenExam: (id: string) => void }) {
   const { avisar, versiones, reconexion } = useCampos('avisar', 'versiones', 'reconexion');
   const version = `${versiones[`${a.id}/`] ?? 0}-${reconexion}`;
   const [ex, setEx] = useState<Examen>();
@@ -217,7 +241,7 @@ function EditorExamen({ a, id, onVolver }: { a: AsignaturaDetalle; id: string; o
   if (!ex || !apartado) return null;
 
   const eliminar = async () => {
-    if (!(await confirmar(`¿Eliminar «${ex.titulo}»?`, { texto: 'Se moverá a la papelera, de donde podrás recuperarlo.', boton: 'Eliminar', peligro: true }))) return;
+    if (!(await confirmar(`¿Eliminar «${ex.titulo}»?`, { texto: 'Se moverá el examen completo a la papelera. Puedes recuperarlo en Inicio → Papelera.', boton: 'Mover a la papelera', peligro: true }))) return;
     try {
       await api.eliminarExamen(a.id, id);
       onVolver();
@@ -236,10 +260,18 @@ function EditorExamen({ a, id, onVolver }: { a: AsignaturaDetalle; id: string; o
           valor={ex.titulo}
           onGuardar={async (titulo) => setEx(await api.guardarExamen(a.id, id, { titulo }))}
         />
-        <button className="rounded-lg p-1.5 text-texto-3 hover:text-error cursor-pointer" title="Eliminar el examen" onClick={eliminar}>
+        <button className="rounded-lg p-1.5 text-texto-3 hover:text-error cursor-pointer" title="Eliminar el examen" aria-label="Eliminar el examen" onClick={eliminar}>
           <Trash2 className="size-4" />
         </button>
       </div>
+
+      {ex.adaptation && (
+        <Tarjeta titulo={EXAM_ADAPTATIONS.find((variant) => variant.id === ex.adaptation!.kind)?.name ?? 'Versión adaptada'} ayuda="Copia independiente: revisa los enunciados, las respuestas y la rúbrica antes de utilizarla.">
+          <p className="text-sm text-texto-2">Basada en «{ex.adaptation.sourceTitle}». Preguntas seleccionadas para adaptar: {ex.adaptation.questionIds.length}.</p>
+          <Boton variante="fantasma" onClick={() => onOpenExam(ex.adaptation!.sourceExamId)}>Abrir examen de origen</Boton>
+          <ExamAdaptationComparison subjectId={a.id} exam={ex} />
+        </Tarjeta>
+      )}
 
       <div className="flex gap-0.5 rounded-lg bg-panel-2 p-0.5">
         {(
@@ -272,9 +304,11 @@ function EditorExamen({ a, id, onVolver }: { a: AsignaturaDetalle; id: string; o
         </p>
       )}
 
-      {apartado === 'preparar' && <Preparar a={a} ex={ex} generando={generando} onCambio={setEx} />}
+      {apartado === 'preparar' && (ex.adaptation
+        ? <p role="status" className="text-sm text-texto-2">{generando ? 'Generando la adaptación. Al terminar podrás revisar y editar sus preguntas.' : 'Esta copia conserva el material y la puntuación del examen de origen. Revisa sus preguntas o abre el examen de origen para crear otra versión.'}</p>
+        : <Preparar a={a} ex={ex} generando={generando} onCambio={setEx} />)}
       {apartado === 'preguntas' && <Revisar a={a.id} ex={ex} trabajos={trabajos} onCambio={setEx} />}
-      {apartado === 'vista' && <VistaYExportar a={a.id} ex={ex} onCambio={setEx} />}
+      {apartado === 'vista' && <VistaYExportar a={a.id} ex={ex} onCambio={setEx} onOpenExam={onOpenExam} />}
     </div>
   );
 }
@@ -424,12 +458,12 @@ function ElegirDocumentos({ a, valor, onCambio }: { a: AsignaturaDetalle; valor:
   useEffect(() => {
     if (abierto && !secciones[abierto]) api.secciones(a.id, abierto).then((l) => setSecciones((s) => ({ ...s, [abierto]: l.filter((x) => !ARCHIVO_AUTOEVALUACION.test(x.archivo) && x.palabras > 40) }))).catch(() => {});
   }, [abierto, a.id, secciones]);
-  if (!a.documentos.length) return <p className="text-[12.5px] text-texto-3">La asignatura no tiene documentos: sube abajo los archivos sobre los que preguntar.</p>;
+  if (!a.documentos.length) return <p className="text-[12.5px] text-texto-3">La asignatura no tiene apuntes: sube abajo los archivos sobre los que preguntar.</p>;
   const elegido = (d: string) => valor.find((x) => x.id === d);
   const poner = (d: string, sel?: string[]) => onCambio(sel === undefined ? valor.filter((x) => x.id !== d) : [...valor.filter((x) => x.id !== d), { id: d, secciones: sel }]);
   return (
     <div>
-      <div className="mb-1 text-[12.5px] font-medium text-texto-2">Documentos de la asignatura</div>
+      <div className="mb-1 text-[12.5px] font-medium text-texto-2">Apuntes de la asignatura</div>
       <div className="divide-y divide-borde rounded-lg border border-borde">
         {a.documentos.map((d) => {
           const e = elegido(d.id);
@@ -441,7 +475,7 @@ function ElegirDocumentos({ a, valor, onCambio }: { a: AsignaturaDetalle; valor:
                 <FileText className="size-3.5 shrink-0 text-texto-3" />
                 <span className="min-w-0 flex-1 truncate text-[13px]">{d.titulo}</span>
                 {e && <span className="text-[12px] text-texto-3">{e.secciones.length ? `${e.secciones.length} secciones` : 'entero'}</span>}
-                <button className="rounded p-1 text-texto-3 hover:text-texto cursor-pointer" title="Elegir secciones" onClick={() => setAbierto(abierto === d.id ? undefined : d.id)}>
+                <button className="rounded p-1 text-texto-3 hover:text-texto cursor-pointer" title="Elegir secciones" aria-label="Elegir secciones" onClick={() => setAbierto(abierto === d.id ? undefined : d.id)}>
                   <ChevronDown className={cx('size-3.5 transition-transform', abierto === d.id && 'rotate-180')} />
                 </button>
               </div>
@@ -596,7 +630,7 @@ function ArchivosExamen({ a, id }: { a: string; id: string }) {
                     : 'leyendo…'}{' '}
                 · {tamano(f.tamano)}
               </span>
-              <button className="rounded p-1 text-texto-3 hover:text-error cursor-pointer" title="Quitar del examen" onClick={() => quitar(f)}>
+              <button className="rounded p-1 text-texto-3 hover:text-error cursor-pointer" title="Quitar del examen" aria-label="Quitar del examen" onClick={() => quitar(f)}>
                 <Trash2 className="size-3.5" />
               </button>
             </div>
@@ -845,13 +879,13 @@ function TarjetaPregunta({
             p
           </label>
           <div className="flex items-center">
-            <button className="rounded p-1 text-texto-3 hover:text-texto cursor-pointer disabled:opacity-40" title="Editar a mano" disabled={ocupada} onClick={onEditar}>
+            <button className="rounded p-1 text-texto-3 hover:text-texto cursor-pointer disabled:opacity-40" title="Editar a mano" aria-label="Editar a mano" disabled={ocupada} onClick={onEditar}>
               <Pencil className="size-3.5" />
             </button>
-            <button className="rounded p-1 text-texto-3 hover:text-texto cursor-pointer disabled:opacity-40" title="Rehacer con IA" disabled={ocupada} onClick={onRehacer}>
+            <button className="rounded p-1 text-texto-3 hover:text-texto cursor-pointer disabled:opacity-40" title="Rehacer con IA" aria-label="Rehacer con IA" disabled={ocupada} onClick={onRehacer}>
               <RotateCcw className="size-3.5" />
             </button>
-            <button className="rounded p-1 text-texto-3 hover:text-error cursor-pointer disabled:opacity-40" title="Quitar" disabled={ocupada} onClick={onEliminar}>
+            <button className="rounded p-1 text-texto-3 hover:text-error cursor-pointer disabled:opacity-40" title="Quitar" aria-label="Quitar" disabled={ocupada} onClick={onEliminar}>
               <Trash2 className="size-3.5" />
             </button>
           </div>
@@ -1205,7 +1239,89 @@ function EditorRubrica({ rubrica, puntos, onCambio }: { rubrica: CriterioRubrica
 
 type Vista = 'examen' | 'solucionario' | 'rubrica';
 
-function VistaYExportar({ a, ex, onCambio }: { a: string; ex: Examen; onCambio: (ex: Examen) => void }) {
+function ExamAdaptations({ subjectId, exam, onOpenExam }: { subjectId: string; exam: Examen; onOpenExam: (id: string) => void }) {
+  const { avisar, versiones, reconexion } = useCampos('avisar', 'versiones', 'reconexion');
+  const [showDialog, setShowDialog] = useState(false);
+  const [kind, setKind] = useState<ExamAdaptationKind>('easy-reading');
+  const [questionIds, setQuestionIds] = useState<string[]>([]);
+  const [instructions, setInstructions] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [copies, setCopies] = useState<Examen[]>([]);
+  const jobs = useTrabajosExamen(subjectId);
+  const busy = exam.estado === 'generando' || jobs.some((job) => job.ref === exam.id || job.ref?.startsWith(`${exam.id}/`));
+  const version = `${versiones[`${subjectId}/`] ?? 0}-${reconexion}`;
+  useEffect(() => {
+    let current = true;
+    api.examenes(subjectId).then((items) => {
+      if (current) setCopies(items.filter((item) => item.adaptation?.sourceExamId === exam.id));
+    }).catch((error) => avisar(error.message, 'error'));
+    return () => { current = false; };
+  }, [subjectId, exam.id, version, avisar]);
+  const createAdaptation = async () => {
+    setCreating(true);
+    try {
+      const copy = await api.adaptExam(subjectId, exam.id, { kind, questionIds, instructions });
+      setShowDialog(false);
+      if (copy.estado === 'error') avisar(copy.error ?? 'No se pudo generar la adaptación', 'error');
+      else avisar(copy.estado === 'listo' ? 'Versión adaptada lista para revisar.' : 'Copia creada. La adaptación se está generando.', 'ok');
+      onOpenExam(copy.id);
+    } catch (error) {
+      avisar((error as Error).message, 'error');
+    } finally {
+      setCreating(false);
+    }
+  };
+  return (
+    <Tarjeta titulo="Versiones adaptadas" ayuda="Crea una copia editable con su propio solucionario, rúbrica y exportación. Revisa el resultado antes de usarlo.">
+      <p className="text-[13px] text-texto-2">Lectura fácil, con apoyos o ampliación. Puedes adaptar todas las preguntas o elegir algunas; las demás se conservan.</p>
+      <Boton icono={<Sparkles className="size-4" />} disabled={busy || !exam.preguntas.length} onClick={() => {
+        setQuestionIds(exam.preguntas.map((question) => question.id));
+        setShowDialog(true);
+      }}>Crear versión adaptada</Boton>
+      {copies.length > 0 && <ul className="divide-y divide-borde">
+        {copies.map((copy) => <li key={copy.id}>
+          <button className="flex min-h-11 w-full flex-wrap items-center justify-between gap-2 py-2 text-left text-sm text-acento-texto cursor-pointer focus-visible:outline-2 focus-visible:outline-acento" onClick={() => onOpenExam(copy.id)}>
+            <span>{copy.titulo}</span>
+            <span className="text-xs text-texto-3">{copy.estado === 'generando' ? 'Generando…' : copy.error ? 'Revisar error' : 'Abrir y revisar'}</span>
+          </button>
+        </li>)}
+      </ul>}
+      {showDialog && <Modal abierto sinCerrar={creating} onCerrar={() => { if (!creating) setShowDialog(false); }} titulo="Crear versión adaptada" descripcion="Elige la adaptación y las preguntas. Se conservarán el orden, los tipos y los puntos en una copia independiente.">
+        <div className="space-y-5">
+          <fieldset className="space-y-2" disabled={creating}>
+            <legend className="mb-2 text-sm font-medium">Tipo de adaptación</legend>
+            {EXAM_ADAPTATIONS.map((variant) => <label key={variant.id} className={cx('flex min-h-11 cursor-pointer items-start gap-3 rounded-lg border p-3', kind === variant.id ? 'border-acento bg-acento-suave/50' : 'border-borde')}>
+              <input type="radio" name="exam-adaptation-kind" value={variant.id} checked={kind === variant.id} onChange={() => setKind(variant.id)} className="mt-1 size-4 accent-[var(--acento)]" />
+              <span><span className="block text-sm font-medium">{variant.name}</span><span className="block text-xs text-texto-2">{variant.description}</span></span>
+            </label>)}
+          </fieldset>
+          <fieldset disabled={creating}>
+            <legend className="mb-2 text-sm font-medium">Preguntas que se adaptarán ({questionIds.length} de {exam.preguntas.length})</legend>
+            <label className="flex min-h-11 cursor-pointer items-center gap-2 text-sm">
+              <input type="checkbox" checked={questionIds.length === exam.preguntas.length} onChange={(event) => setQuestionIds(event.target.checked ? exam.preguntas.map((question) => question.id) : [])} className="size-4 accent-[var(--acento)]" />Seleccionar todas
+            </label>
+            <div className="max-h-56 overflow-y-auto rounded-lg border border-borde px-3">
+              {exam.preguntas.map((question, index) => <label key={question.id} className="flex min-h-11 cursor-pointer items-start gap-2 py-2 text-sm">
+                <input type="checkbox" checked={questionIds.includes(question.id)} onChange={(event) => setQuestionIds((ids) => event.target.checked ? [...ids, question.id] : ids.filter((id) => id !== question.id))} className="mt-1 size-4 shrink-0 accent-[var(--acento)]" />
+                <span>{index + 1}. {question.enunciado} <span className="text-xs text-texto-3">({fmtPuntos(question.puntos)} p)</span></span>
+              </label>)}
+            </div>
+          </fieldset>
+          <label className="block text-sm font-medium">Indicaciones adicionales <span className="font-normal text-texto-3">(opcional)</span>
+            <AreaTexto className="mt-1" rows={3} maxLength={3000} disabled={creating} value={instructions} onChange={(event) => setInstructions(event.target.value)} placeholder="Por ejemplo: una instrucción por frase; apoyos para organizar la respuesta. No incluyas datos personales del alumnado." />
+          </label>
+          <p className="text-xs text-texto-2">La IA preparará también las respuestas y la rúbrica de las preguntas adaptadas. La copia conservará la puntuación y las opciones de impresión.</p>
+          <div className="flex flex-wrap justify-end gap-2">
+            <Boton disabled={creating} onClick={() => setShowDialog(false)}>Cancelar</Boton>
+            <Boton variante="primario" cargando={creating} disabled={creating || !questionIds.length} onClick={createAdaptation}>Crear y generar copia</Boton>
+          </div>
+        </div>
+      </Modal>}
+    </Tarjeta>
+  );
+}
+
+function VistaYExportar({ a, ex, onCambio, onOpenExam }: { a: string; ex: Examen; onCambio: (ex: Examen) => void; onOpenExam: (id: string) => void }) {
   const { avisar } = useCampos('avisar');
   const [vista, setVista] = useState<Vista>('examen');
   const [modelo, setModelo] = useState<'A' | 'B'>('A');
@@ -1244,11 +1360,12 @@ function VistaYExportar({ a, ex, onCambio }: { a: string; ex: Examen; onCambio: 
 
   return (
     <div className="space-y-4">
-      <Tarjeta titulo="En papel" ayuda="Cómo sale el examen al imprimirlo">
+      <ExamAdaptations subjectId={a} exam={ex} onOpenExam={onOpenExam} />
+      <Tarjeta titulo="Opciones de vista previa y exportación" ayuda="Se guardan para este examen y se aplican a la vista previa, PDF, Word y LibreOffice">
         <div className="grid gap-2 sm:grid-cols-2">
           {(
             [
-              ['espacio', 'Espacio para responder', 'Líneas bajo cada pregunta (un recuadro en los ejercicios); se ajustan en cada pregunta', op.espacio !== false, (v: boolean) => opcion({ espacio: v })],
+              ['espacio', 'Incluir espacio para responder', 'Opcional: añade líneas o recuadros bajo las preguntas. La cantidad se ajusta al editar cada pregunta.', op.espacio === true, (v: boolean) => opcion({ espacio: v })],
               ['tablaNotas', 'Tabla de calificación', 'En la cabecera, con la puntuación máxima de cada parte y una casilla para la nota', op.tablaNotas !== false, (v: boolean) => opcion({ tablaNotas: v })],
               ['hojaRespuestas', 'Hoja de respuestas', conHoja ? 'Al final, para marcar con una X las de test y verdadero o falso' : 'Para las de test y verdadero o falso (este examen no tiene)', !!op.hojaRespuestas, (v: boolean) => opcion({ hojaRespuestas: v })],
               ['modeloB', 'Modelo B', 'Las mismas preguntas y opciones en otro orden, con su solucionario y su rúbrica', !!op.modeloB, (v: boolean) => opcion({ modeloB: v })],

@@ -60,7 +60,7 @@ export function VistaInicio() {
           <Vacio
             icono={<BookOpen className="size-6" />}
             titulo="Aún no tienes asignaturas"
-            texto="Cada asignatura guarda su contexto y sus destinatarios; dentro creas los documentos de apuntes y pides a los agentes que trabajen en ellos."
+            texto="Cada asignatura guarda su contexto y sus destinatarios; dentro creas los apuntes y pides a los agentes que trabajen en ellos."
             accion={
               <div className="flex flex-wrap justify-center gap-2">
                 <Boton variante="primario" icono={<Plus className="size-4" />} onClick={() => setNueva(true)}>
@@ -101,7 +101,7 @@ export function VistaInicio() {
                     tam="sm"
                     variante="fantasma"
                     icono={<Archive className="size-3.5" />}
-                    title="Un .zip con todas las asignaturas, sus documentos y sus fuentes, para guardarlo aparte o llevarlo a otro equipo"
+                    title="Un .zip con todas las asignaturas, sus apuntes y sus fuentes, para guardarlo aparte o llevarlo a otro equipo"
                     onClick={() => api.descargarCopia()}
                   >
                     Copia de seguridad de todo
@@ -128,7 +128,7 @@ export function VistaInicio() {
                       {a.destinatarios && <span className="mt-2 line-clamp-2 block text-[13px] text-texto-2">{a.destinatarios}</span>}
                     </span>
                     <span className="mt-auto flex items-center justify-between gap-2 border-t border-borde pt-3 text-[13px] text-texto-2">
-                      <span>{a.documentos.length === 1 ? '1 documento' : `${a.documentos.length} documentos`}</span>
+                      <span>{a.documentos.length === 1 ? '1 apunte' : `${a.documentos.length} apuntes`}</span>
                       <GastoTokens asignatura={a.id} className="font-mono text-[12px]" />
                     </span>
                   </button>

@@ -1,3 +1,4 @@
+import { ENGINE_IDS, ENGINE_NAMES } from '../../../shared/engines';
 import { useEffect, useRef, useState } from 'react';
 import { ArrowDown, ArrowUp, RotateCcw } from 'lucide-react';
 import type { Motor, Tokens } from '../../../shared/tipos';
@@ -33,9 +34,9 @@ export function GastoTokens({ asignatura, documento, className, etiqueta }: { as
   const porMotor = documento ? gasto?.documentos[documento] : gasto?.total;
   const t = totalDe(porMotor);
   if (!t.entrada && !t.salida) return null;
-  const detalle = (['claude', 'codex'] as Motor[])
+  const detalle = (ENGINE_IDS)
     .filter((m) => porMotor?.[m]?.entrada || porMotor?.[m]?.salida)
-    .map((m) => `${m === 'claude' ? 'Claude' : 'Codex'}: ${porMotor![m].entrada.toLocaleString('es')} de entrada (${porMotor![m].cache.toLocaleString('es')} de caché) · ${porMotor![m].salida.toLocaleString('es')} de salida`)
+    .map((m) => `${ENGINE_NAMES[m]}: ${porMotor![m].entrada.toLocaleString('es')} de entrada (${porMotor![m].cache.toLocaleString('es')} de caché) · ${porMotor![m].salida.toLocaleString('es')} de salida`)
     .join('\n');
   return (
     <span className={cx('inline-flex items-center gap-1.5 text-texto-3', className)} title={`Tokens gastados en ${documento ? 'este documento' : 'esta asignatura'}\n${detalle}`}>
@@ -59,7 +60,7 @@ export function ContadorTokensPie() {
   }, [abierto]);
   if (!contador) return null;
 
-  const motores: Motor[] = ['claude', 'codex'];
+  const motores = ENGINE_IDS;
   const hoy = suma(motores.map((m) => contador.hoy.porMotor[m] ?? cero));
   const total = suma(motores.map((m) => contador.total[m] ?? cero));
 
@@ -87,6 +88,7 @@ export function ContadorTokensPie() {
         <tbody>
           <Fila etiqueta="Claude" t={datos.claude ?? cero} />
           <Fila etiqueta="Codex" t={datos.codex ?? cero} />
+          <Fila etiqueta="OpenCode" t={datos.opencode ?? cero} />
           <Fila etiqueta="Total" t={totalFila} fuerte />
         </tbody>
       </table>

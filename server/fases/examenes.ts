@@ -10,6 +10,7 @@ import { ARCHIVO_AUTOEVALUACION } from '../../shared/tipos';
 import { DIFICULTADES, TIPOS_ACTIVIDAD, preguntaValida, type PreguntaActividad, type TipoActividad } from '../../shared/actividades';
 import {
   MAX_PREGUNTAS_EXAMEN,
+  EXAM_ADAPTATIONS,
   OPCIONES_EXAMEN,
   TIPOS_CON_RUBRICA,
   ajustarRubrica,
@@ -22,6 +23,7 @@ import {
   type Examen,
   type OpcionesExamen,
   type PreguntaExamen,
+  type ExamAdaptationRequest,
 } from '../../shared/examenes';
 import { ErrorUsuario } from '../store';
 import { PedirAlAgente } from '../agents/cola';
@@ -30,6 +32,7 @@ import { extraerJson } from '../texto';
 import { indexar, leerPagina, type InfoIndice } from '../rag';
 import { FORMATO_PREGUNTA } from './actividades';
 import { FlujoAsignatura } from './asignatura';
+import { selectExamAdaptationContext } from '../examContext';
 
 /** Texto del material que va en el mensaje; lo que no quepa, el agente lo lee o lo busca. */
 const MAX_MATERIAL = 160_000;
@@ -140,8 +143,8 @@ export class FlujoExamenes extends FlujoAsignatura {
     if (entrada.penalizar !== undefined) op.penalizar = !!entrada.penalizar || undefined;
     if (entrada.instrucciones !== undefined) op.instrucciones = texto(entrada.instrucciones, 3000) || undefined;
     if (entrada.indicaciones !== undefined) op.indicaciones = texto(entrada.indicaciones, 3000) || undefined;
-    // En papel (espacio y tabla de calificación, por defecto sí; hoja de respuestas y modelo B, por defecto no)
-    if (entrada.espacio !== undefined) op.espacio = entrada.espacio === false ? false : undefined;
+    // Answer space is opt-in; preserve the selection for previews and exports.
+    if (entrada.espacio !== undefined) op.espacio = entrada.espacio === true;
     if (entrada.tablaNotas !== undefined) op.tablaNotas = entrada.tablaNotas === false ? false : undefined;
     if (entrada.hojaRespuestas !== undefined) op.hojaRespuestas = !!entrada.hojaRespuestas || undefined;
     if (entrada.modeloB !== undefined) op.modeloB = !!entrada.modeloB || undefined;
@@ -288,14 +291,14 @@ export class FlujoExamenes extends FlujoAsignatura {
   protected async contextoExamen(asig: string, ex: Examen) {
     const m = await this.materialExamen(asig, ex);
     if (m.vacio) throw new ErrorUsuario('Elige el material del examen: algún documento con secciones redactadas, una fuente o un archivo subido');
-    const curriculo = (await this.almacen.leerCurriculo(asig)).trim();
+    const curriculo = (await this.curriculumReference(asig)).trim();
     const texto = `## Material del examen
 Pregunta SOLO por lo que está en este material, no por contenidos que no aparezcan en él:
 ${m.lista.join('\n')}
 ${m.leer.length ? `\nNo caben en este mensaje y tienes que leerlos: ${m.leer.map((r) => `\`${r}\``).join(', ')}.` : ''}${
       m.directos.length ? `\nSin texto extraíble (escaneados o imágenes): ábrelos y léelos directamente: ${m.directos.map((r) => `\`${r}\``).join(', ')}.` : ''
     }${m.buscar ? '\nAlgunos archivos son demasiado largos para incluirlos enteros: búscalos con `buscar_en_fuentes` y lee sus páginas con `leer_pagina`.' : ''}
-${curriculo ? `\n## Currículo oficial (curriculo.md)\nIndica en «criterios» qué criterios de evaluación de este currículo evalúa cada pregunta (su numeración, p. ej. «1.2» o «RA2.b»).\n\n${curriculo.slice(0, 30_000)}\n` : ''}${
+${curriculo ? `\n## Currículo estructurado activo\nIndica en «criterios» qué criterios de evaluación de este currículo evalúa cada pregunta (su numeración, p. ej. «1.2» o «RA2.b»).\n\n${curriculo}\n` : ''}${
       m.partes.length ? `\n## Contenido del material (ya incluido: no hace falta que lo leas)\n${m.partes.join('\n')}` : ''
     }`;
     return { texto, carpetas: m.carpetas };
@@ -304,10 +307,86 @@ ${curriculo ? `\n## Currículo oficial (curriculo.md)\nIndica en «criterios» q
   // ---------------------------------------------------------------------------
   // Generación
 
+  /** Create an independent adaptation from a durable snapshot of the source exam. */
+  async adaptExam(subjectId: string, examId: string, request: ExamAdaptationRequest): Promise<Examen> {
+    const variant = EXAM_ADAPTATIONS.find((item) => item.id === request?.kind);
+    if (!variant) throw new ErrorUsuario('Tipo de adaptación no válido');
+    const source = await this.almacen.leerExamen(subjectId, examId);
+    if (source.estado === 'generando' || this.ocupado('examen', subjectId, undefined, undefined, examId)
+      || this.dep.cola.listar().some((job) => job.asignatura === subjectId && job.paso === 'examen' && job.ref?.startsWith(`${examId}/`) && ['ejecutando', 'en-cola'].includes(job.estado))) {
+      throw new ErrorUsuario('Espera a que termine el agente que trabaja en este examen');
+    }
+    if (!source.preguntas.length) throw new ErrorUsuario('El examen todavía no tiene preguntas');
+    if (source.adaptation && !source.adaptation.completedAt) throw new ErrorUsuario('La adaptación todavía no está lista');
+    if (!Array.isArray(request.questionIds) || !request.questionIds.length
+      || new Set(request.questionIds).size !== request.questionIds.length
+      || request.questionIds.some((id) => !source.preguntas.some((question) => question.id === id))) {
+      throw new ErrorUsuario('Selecciona preguntas válidas para adaptar');
+    }
+    const title = `${source.titulo} — ${variant.name}`.slice(0, 150);
+    const copyId = await this.almacen.reservarExamen(subjectId, title);
+    const now = new Date().toISOString();
+    const copy: Examen = {
+      id: copyId, titulo: title, opciones: structuredClone(source.opciones), preguntas: [],
+      estado: 'generando', creado: now, actualizado: now,
+      adaptation: {
+        kind: variant.id, sourceExamId: source.id, sourceTitle: source.titulo, sourceUpdatedAt: source.actualizado,
+        questionIds: [...request.questionIds], instructions: texto(request.instructions, 3000) || undefined,
+        originalQuestions: structuredClone(source.preguntas),
+      },
+    };
+    await this.almacen.guardarExamen(subjectId, copy);
+    try {
+      const sourceFiles = this.dirFuentesExamen(subjectId, examId);
+      const targetFiles = this.dirFuentesExamen(subjectId, copyId);
+      if (existsSync(sourceFiles)) await fs.cp(sourceFiles, targetFiles, { recursive: true });
+      else await fs.mkdir(targetFiles, { recursive: true });
+      const output = this.salida(`examen-${copyId}`);
+      const { selectedQuestions: selected, referenceQuestions } = selectExamAdaptationContext(source.preguntas, request.questionIds);
+      await this.lanzar({
+        agente: 'examinador', asignatura: subjectId, titulo: `Adaptación: ${title}`, paso: 'examen', ref: copyId,
+        carpetas: { asignatura: this.almacen.dirFuentes(subjectId), examen: targetFiles },
+        tarea: `Adapta las preguntas seleccionadas del examen «${source.titulo}».
+Modalidad: ${variant.name}. ${variant.description}
+${variant.id === 'extension'
+  ? 'Aumenta la profundidad cognitiva y exige justificar, aplicar o relacionar. No introduzcas contenidos ajenos al examen.'
+  : 'Mantén los objetivos, criterios de evaluación y dificultad originales. Facilita el acceso al enunciado, sin simplificar el conocimiento evaluado.'}
+${variant.id === 'supported' ? 'Divide las instrucciones en pasos y añade apoyos textuales o ejemplos de cómo organizar la respuesta. No resuelvas la pregunta ni des pistas sobre la opción correcta. No uses imágenes externas.' : ''}
+Mantén EXACTAMENTE el id, tipo, orden, puntos y criterios de evaluación de cada pregunta seleccionada.
+Revisa y adapta también explicacion, solucion, rubrica y errores para que correspondan al nuevo enunciado.
+Las preguntas abiertas (${TIPOS_CON_RUBRICA.join(', ')}) deben incluir solucion y rubrica con criterios observables cuyos puntos sumen los de la pregunta.
+Conserva los campos propios del tipo de pregunta (opciones, correcta, correctas, respuestas, valor, tolerancia, unidades, etc.) y comprueba la validez de cada respuesta.
+Usa el mismo idioma que el examen original. No incluyas las soluciones dentro del enunciado.
+No modifiques ningún archivo del material ni el examen original.
+${copy.adaptation!.instructions ? `Indicaciones adicionales del docente: ${copy.adaptation!.instructions}` : ''}
+
+Preguntas seleccionadas completas (incluyen sus soluciones y rúbricas):
+${JSON.stringify({ instrucciones: source.opciones.instrucciones, preguntas: selected })}
+
+Otras preguntas, solo como referencia para conservar datos compartidos y evitar repeticiones (sin su desarrollo de corrección):
+${JSON.stringify(referenceQuestions)}
+Si una pregunta seleccionada depende de una solución o rúbrica omitida, consulta únicamente esa pregunta en adaptation.originalQuestions de \`examenes/${copyId}/examen.json\`. Esa instantánea conserva el examen original completo; no modifiques ese archivo.
+
+Devuelve SOLO las preguntas con estos ids, exactamente una por id: ${JSON.stringify(selected.map((question) => question.id))}.
+Escribe en \`${output}\` un JSON con esta estructura: {"preguntas": [cada pregunta adaptada completa, incluido su id]}.
+Las preguntas no seleccionadas se conservarán automáticamente sin cambios.`,
+        post: { tipo: 'examen', datos: { salida: output, id: copyId, adaptation: true } },
+      });
+    } catch (error) {
+      await this.cambiarExamen(subjectId, copyId, (exam) => {
+        exam.estado = 'error';
+        exam.error = (error as Error).message;
+      });
+      // Keep the failed copy visible so that it can be inspected or deleted.
+    }
+    return this.almacen.leerExamen(subjectId, copyId);
+  }
+
   /** Genera (o rehace) todas las preguntas del examen con las opciones guardadas. */
   async generarExamen(asig: string, id: string, opciones?: Partial<OpcionesExamen>) {
     if (opciones) await this.editarExamen(asig, id, { opciones });
     const ex = await this.almacen.leerExamen(asig, id);
+    if (ex.adaptation) throw new ErrorUsuario('Crea otra versión desde el examen original para volver a adaptarlo; puedes editar las preguntas de esta copia');
     if (ex.estado === 'generando' || this.ocupado('examen', asig, undefined, undefined, id)) throw new ErrorUsuario('El examen ya se está generando');
     const pedidas = tiposExamen(ex.opciones);
     if (!pedidas.length) throw new ErrorUsuario('Elige al menos un tipo de pregunta');
@@ -440,6 +519,7 @@ NO modifiques ningún otro archivo. Escribe SOLO en \`${salida}\` este JSON exac
     const salida = String(datos.salida);
     const ex = await this.almacen.leerExamen(asig, id).catch(() => undefined);
     if (!ex) return 'El examen se ha eliminado mientras se generaba';
+    if (datos.adaptation === true) return this.processExamAdaptation(asig, ex, salida);
     const r = await this.leerSalidaAsig<{ preguntas?: Partial<PreguntaExamen>[] }>(asig, salida);
     const pedidas = new Set(tiposExamen(ex.opciones).map(([tipo]) => tipo));
     const recibidas = Array.isArray(r.preguntas) ? r.preguntas : [];
@@ -459,6 +539,42 @@ NO modifiques ningún otro archivo. Escribe SOLO en \`${salida}\` este JSON exac
     });
     const descartadas = recibidas.length - validas.length;
     return `Examen listo: ${preguntas.length} preguntas${descartadas ? ` (${descartadas} descartadas por formato)` : ''}. Revísalo en la pestaña «Exámenes» de la asignatura.`;
+  }
+
+  /** Reject incomplete adaptations before replacing the snapshot with a usable copy. */
+  protected async processExamAdaptation(subjectId: string, exam: Examen, output: string): Promise<string> {
+    const adaptation = exam.adaptation;
+    if (!adaptation) throw new ErrorUsuario('No se encuentra el origen de la adaptación');
+    if (adaptation.completedAt) return 'La adaptación ya se había incorporado';
+    const result = await this.leerSalidaAsig<{ preguntas?: Partial<PreguntaExamen>[] } | null>(subjectId, output);
+    const received = Array.isArray(result?.preguntas) ? result.preguntas : [];
+    const reject = (): never => {
+      throw new PedirAlAgente('La adaptación está incompleta o no conserva las preguntas.',
+        `Reescribe \`${output}\`: incluye exactamente una pregunta completa y válida por cada id seleccionado (${adaptation.questionIds.join(', ')}), con el mismo tipo. Las abiertas necesitan solucion y rubrica. No añadas ni omitas preguntas.`);
+    };
+    if (received.length !== adaptation.questionIds.length || new Set(received.map((question) => question?.id)).size !== received.length) reject();
+    const replacements = new Map<string, PreguntaExamen>();
+    for (const raw of received) {
+      const original = adaptation.originalQuestions.find((question) => question.id === raw?.id);
+      if (!original || !adaptation.questionIds.includes(original.id) || raw.tipo !== original.tipo) return reject();
+      let question: PreguntaExamen;
+      try {
+        question = limpiarPregunta({ ...raw, puntos: original.puntos, criterios: original.criterios, origen: original.origen, lineas: original.lineas }, original.id);
+      } catch {
+        return reject();
+      }
+      if (!preguntaValida(question) || (TIPOS_CON_RUBRICA.includes(question.tipo) && (!question.solucion || !question.rubrica?.length))) return reject();
+      replacements.set(original.id, ajustarRubrica(question));
+    }
+    if (adaptation.questionIds.some((id) => !replacements.has(id))) reject();
+    await this.cambiarExamen(subjectId, exam.id, (current) => {
+      if (current.adaptation?.completedAt) return;
+      current.preguntas = adaptation.originalQuestions.map((question) => replacements.get(question.id) ?? structuredClone(question));
+      current.estado = 'listo';
+      current.error = undefined;
+      current.adaptation!.completedAt = new Date().toISOString();
+    });
+    return 'Versión adaptada lista. Revisa sus preguntas, solucionario y rúbrica antes de utilizarla.';
   }
 
   /** Resultado de una pregunta rehecha o nueva. */

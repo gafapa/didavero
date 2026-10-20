@@ -61,7 +61,7 @@ export function AsistenteInicio() {
         </svg>
         <div className="relative flex items-center gap-3 font-titulo text-[22px] font-bold tracking-tight">
           <Logo invertido className="size-10" />
-          Apuntes IA
+          Didavero
         </div>
         <div className="relative space-y-4">
           <p className="text-[15px] font-semibold text-white/85">Primer arranque · paso {paso + 1} de 3</p>
@@ -126,7 +126,7 @@ export function AsistenteInicio() {
           {paso === 1 && (
             <>
               <p className="text-[18px] leading-normal text-texto-2">
-                La app usa Claude Code o Codex instalados en este equipo, con tu propia suscripción. No hace falta ninguna clave de API.
+                La app usa Claude Code, Codex u OpenCode instalados en este equipo. Claude y Codex usan tu cuenta; OpenCode, el proveedor o modelo local que configures.
               </p>
               <div className="space-y-3">
                 {motores ? (
@@ -137,7 +137,7 @@ export function AsistenteInicio() {
               </div>
               <p className="flex items-center gap-2.5 text-[13.5px] text-texto-3">
                 <span className="size-2 shrink-0 animate-pulse rounded-full bg-ok" />
-                Se comprueba solo cada pocos segundos. Basta con uno de los dos; las imágenes generadas con IA necesitan Codex.
+                Se comprueba solo cada pocos segundos. Basta con un motor listo; las imágenes generadas con IA necesitan Codex.
               </p>
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <Boton variante="fantasma" icono={<RefreshCw className={comprobando ? 'size-4 animate-spin' : 'size-4'} />} onClick={comprobar}>

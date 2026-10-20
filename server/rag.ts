@@ -5,9 +5,10 @@
 // Caché por archivo en «fuentes/.indice/<archivo>.json»; solo se vuelve a procesar un archivo
 // si cambia. Lo usan el servidor (indexar y buscar) y el servidor MCP de los agentes (buscar).
 import fs from 'node:fs/promises';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import MiniSearch from 'minisearch';
+import { writeFileAtomic } from './atomicFiles';
 
 export interface Fragmento {
   archivo: string;
@@ -161,14 +162,27 @@ interface Cache {
 const nombreCache = (archivo: string) => `${archivo}.json`;
 
 /** Actualiza las cachés de una carpeta de fuentes. Devuelve el estado de cada archivo. */
-export async function indexar(dirFuentes: string): Promise<InfoIndice[]> {
+const indexing = new Map<string, Promise<InfoIndice[]>>();
+export function indexar(dirFuentes: string): Promise<InfoIndice[]> {
+  const key = path.resolve(dirFuentes);
+  let operation = indexing.get(key);
+  if (!operation) {
+    operation = indexFolder(key); indexing.set(key, operation);
+    void operation.finally(() => { if (indexing.get(key) === operation) indexing.delete(key); }).catch(() => {});
+  }
+  return operation;
+}
+
+async function indexFolder(dirFuentes: string): Promise<InfoIndice[]> {
   if (!existsSync(dirFuentes)) return [];
   const dirIndice = path.join(dirFuentes, '.indice');
   await fs.mkdir(dirIndice, { recursive: true });
   const archivos = (await fs.readdir(dirFuentes, { withFileTypes: true })).filter((e) => e.isFile() && !e.name.startsWith('.')).map((e) => e.name);
   const res: InfoIndice[] = [];
   for (const archivo of archivos) {
-    const st = statSync(path.join(dirFuentes, archivo));
+    let st;
+    try { st = await fs.stat(path.join(dirFuentes, archivo)); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
     const rutaCache = path.join(dirIndice, nombreCache(archivo));
     let cache: Cache | undefined;
     try {
@@ -176,7 +190,10 @@ export async function indexar(dirFuentes: string): Promise<InfoIndice[]> {
     } catch {}
     // Los textos extraídos con Pandoc pueden llegar después que el archivo
     const extraido = TEXTO_EXTRAIDO.test(archivo) ? path.join(dirFuentes, '.texto', `${archivo}.md`) : undefined;
-    const mtime = Math.max(st.mtimeMs, extraido && existsSync(extraido) ? statSync(extraido).mtimeMs : 0);
+    let extractedTime = 0;
+    if (extraido) try { extractedTime = (await fs.stat(extraido)).mtimeMs; } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    const mtime = Math.max(st.mtimeMs, extractedTime);
+    if (cache && (!Array.isArray(cache.fragmentos) || cache.fragmentos.some(fragment => !fragment || typeof fragment.texto !== 'string' || typeof fragment.archivo !== 'string'))) cache = undefined;
     if (!cache || cache.fallo || cache.version !== VERSION || cache.mtime !== mtime || cache.tam !== st.size) {
       try {
         const r = await extraer(dirFuentes, archivo);
@@ -185,14 +202,15 @@ export async function indexar(dirFuentes: string): Promise<InfoIndice[]> {
         console.warn(`No se pudo extraer el texto de ${archivo}:`, (e as Error).message);
         cache = { version: VERSION, mtime, tam: st.size, estado: 'sin-texto', fragmentos: [], fallo: true };
       }
-      await fs.writeFile(rutaCache, JSON.stringify(cache));
+      await writeFileAtomic(rutaCache, JSON.stringify(cache));
       invalidateSourceCache(dirFuentes);
     }
     res.push({ archivo, fragmentos: cache.fragmentos.length, paginas: cache.paginas, estado: cache.estado });
   }
   // Cachés de archivos que ya no existen
-  for (const c of await fs.readdir(dirIndice)) {
-    if (!archivos.includes(c.replace(/\.json$/, ''))) {
+  const indexedFiles = new Set(res.map(info => info.archivo));
+  for (const c of (await fs.readdir(dirIndice)).filter(name => !name.startsWith('.') && name.endsWith('.json'))) {
+    if (!indexedFiles.has(c.replace(/\.json$/, ''))) {
       await fs.rm(path.join(dirIndice, c), { force: true });
       invalidateSourceCache(dirFuentes);
     }
@@ -359,10 +377,10 @@ export async function hayIndice(carpetas: Record<string, string>) {
 }
 
 /** Fragmentos formateados para incluir en un prompt, con su referencia. */
-export function formatear(resultados: (Fragmento & { carpeta?: string })[]): string {
+export function formatear(resultados: (Fragmento & { carpeta?: string })[], options: { subjectLevel?: boolean } = {}): string {
   return resultados
     .map((r) => {
-      const ref = [r.carpeta === 'asignatura' ? `../../fuentes/${r.archivo}` : `fuentes/${r.archivo}`, r.pagina && `pág. ${r.pagina}`, r.titulo && `«${r.titulo}»`]
+      const ref = [r.carpeta === 'asignatura' && !options.subjectLevel ? `../../fuentes/${r.archivo}` : `fuentes/${r.archivo}`, r.pagina && `pág. ${r.pagina}`, r.titulo && `«${r.titulo}»`]
         .filter(Boolean)
         .join(', ');
       return `[${ref}]\n${r.texto}`;

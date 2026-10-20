@@ -81,7 +81,7 @@ export function PasoVisuales({ a, d, estado, trabajos, recargar }: Props) {
       opcional
       hecho={insertadas.length > 0 && propuestas.length === 0}
       trabajando={director.length > 0 || propuestas.some((p) => p.estado === 'generando')}
-      descripcion="Genera los visuales y revísalos aquí. Solo se incorporan al documento cuando pulses Aceptar."
+      descripcion="Genera los visuales y revísalos aquí. Solo se incorporan a los apuntes cuando pulses Aceptar."
       acciones={
         <BotonAgente
           texto="Buscar dónde hacen falta"
@@ -295,7 +295,7 @@ function TarjetaPropuesta({
       )}
       {ready && (
         <section className="mt-3 rounded-lg border border-borde bg-panel p-4" aria-label={`Vista previa: ${p.titulo}`}>
-          <p className="mb-3 text-[12.5px] text-texto-2" role="status">Pendiente de aceptación. Este visual aún no está en el documento.</p>
+          <p className="mb-3 text-[12.5px] text-texto-2" role="status">Pendiente de aceptación. Este visual aún no está en los apuntes.</p>
           <VistaPrevia texto={p.markdown!} base={urlDatos(a, 'documentos', d)} />
         </section>
       )}
@@ -534,7 +534,7 @@ export function PasoExportar({ a, d, estado, recargar }: Props) {
       numero={7}
       titulo="Exportar"
       hecho={estado.exportados.length > 0}
-      descripcion="Une las secciones y genera el documento final. Los diagramas se convierten en imágenes."
+      descripcion="Une las secciones y exporta los apuntes. Los diagramas se convierten en imágenes."
     >
       <PanelExportar a={a} d={d} estado={estado} recargar={recargar} />
     </Paso>

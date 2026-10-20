@@ -48,7 +48,7 @@ export function BuscadorImagenes({ a, d, onGuardada }: { a: string; d: string; o
       if (seccion) avisar(`Insertada al final de «${secciones.find((s) => s.archivo === seccion)?.titulo ?? seccion}»`, 'ok');
       else {
         await navigator.clipboard.writeText(g.markdown).catch(() => {});
-        avisar('Guardada en las imágenes del documento. El Markdown con su pie y su crédito está copiado: pégalo donde quieras.', 'ok');
+        avisar('Guardada en las imágenes de los apuntes. El Markdown con su pie y su crédito está copiado: pégalo donde quieras.', 'ok');
       }
       onGuardada();
     } catch (e) {
@@ -144,7 +144,7 @@ export function BuscadorImagenes({ a, d, onGuardada }: { a: string; d: string; o
                       </select>
                       <button
                         className="flex size-7 items-center justify-center rounded-md text-texto-3 hover:bg-panel-2 hover:text-texto cursor-pointer disabled:opacity-40"
-                        title="Guardar en las imágenes del documento y copiar el Markdown"
+                        title="Guardar en las imágenes de los apuntes y copiar el Markdown"
                         disabled={!!guardando}
                         onClick={() => guardar(r)}
                       >

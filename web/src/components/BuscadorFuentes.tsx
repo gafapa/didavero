@@ -75,17 +75,19 @@ export function BuscadorFuentes({ asignatura, documento, onAnadida }: { asignatu
 
   return (
     <div className="rounded-xl border border-borde bg-panel p-4">
-      <div className="mb-3 flex items-center gap-2">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
         <Search className="size-4 text-acento-texto" />
         <span className="text-sm font-semibold">Buscar fuentes</span>
         <span className="text-[12px] text-texto-3">Un agente busca en la web recursos fiables; tú eliges cuáles añadir.</span>
       </div>
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         <Entrada
           value={consulta}
           onChange={(e) => setConsulta(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && buscar()}
           placeholder="Qué necesitas: «plantas C4 y CAM, nivel Bachillerato»"
+          aria-label="Qué fuentes necesitas buscar"
+          className="min-w-0 flex-1 basis-48"
         />
         <Boton variante="primario" icono={<Search className="size-4" />} cargando={lanzando} disabled={!consulta.trim() || activos.length > 0} onClick={buscar}>
           Buscar

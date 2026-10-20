@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { Ajustes, Esfuerzo, ModeloDisponible, ModelosDisponibles, Motor, PerfilGasto } from '../../shared/tipos';
+import { openCodeModels } from './motores';
 import { AGENTES } from './agentes';
 
 export const ESFUERZOS: Esfuerzo[] = ['low', 'medium', 'high', 'xhigh', 'max'];
@@ -20,7 +21,7 @@ type Tabla = Record<string, [string, Esfuerzo]>;
 // - Revisar datos (calidad), donde un error sale caro: intermedio con esfuerzo alto.
 // - Diagramas y autoevaluación: intermedio con esfuerzo medio.
 // - Tareas mecánicas o de criterio sencillo (estilo, propuestas de visuales, glosario): económico.
-const EQUILIBRADO: Record<Motor, Tabla> = {
+const EQUILIBRADO: Record<Exclude<Motor, 'opencode'>, Tabla> = {
   claude: {
     arquitecto: ['opus', 'high'],
     investigador: ['opus', 'medium'],
@@ -58,7 +59,7 @@ const EQUILIBRADO: Record<Motor, Tabla> = {
 };
 // Ahorro: recorta donde menos se nota (estilo, visuales, glosario, autoevaluación) y mantiene un modelo
 // competente para el índice y la redacción.
-const AHORRO: Record<Motor, Tabla> = {
+const AHORRO: Record<Exclude<Motor, 'opencode'>, Tabla> = {
   claude: {
     arquitecto: ['sonnet', 'high'],
     investigador: ['sonnet', 'medium'],
@@ -95,7 +96,7 @@ const AHORRO: Record<Motor, Tabla> = {
   },
 };
 // Calidad: sube los agentes que deciden el resultado sin disparar los que se llaman a menudo.
-const CALIDAD: Record<Motor, Tabla> = {
+const CALIDAD: Record<Exclude<Motor, 'opencode'>, Tabla> = {
   claude: {
     arquitecto: ['opus', 'xhigh'],
     investigador: ['opus', 'high'],
@@ -131,10 +132,11 @@ const CALIDAD: Record<Motor, Tabla> = {
     transcriptor: ['gpt-6.1-sol', 'medium'],
   },
 };
-const PRESETS: Record<PerfilGasto, Record<Motor, Tabla>> = { ahorro: AHORRO, equilibrado: EQUILIBRADO, calidad: CALIDAD };
+const PRESETS: Record<PerfilGasto, Record<Exclude<Motor, 'opencode'>, Tabla>> = { ahorro: AHORRO, equilibrado: EQUILIBRADO, calidad: CALIDAD };
 
 /** Modelo y esfuerzo de todos los agentes en un motor según un perfil. */
-export function preset(motor: Motor, perfil: PerfilGasto = 'equilibrado'): Record<string, { modelo: string; esfuerzo: Esfuerzo }> {
+export function preset(motor: Motor, perfil: PerfilGasto = 'equilibrado'): Record<string, { modelo: string; esfuerzo?: Esfuerzo }> {
+  if (motor === 'opencode') return Object.fromEntries(Object.keys(AGENTES).map((id) => [id, { modelo: '' }]));
   const tabla = { ...EQUILIBRADO[motor], ...PRESETS[perfil][motor] };
   return Object.fromEntries(Object.entries(tabla).map(([agente, [modelo, esfuerzo]]) => [agente, { modelo, esfuerzo }]));
 }
@@ -147,7 +149,7 @@ const MODELOS_CLAUDE: ModeloDisponible[] = [
 ];
 
 /** Modelos de cada motor. Los de Codex se leen de su caché local (los que muestra su selector). */
-export function modelosDisponibles(): ModelosDisponibles {
+export async function modelosDisponibles(): Promise<ModelosDisponibles> {
   let codex: ModeloDisponible[] = ['gpt-6-luna', 'gpt-6.1-sol', 'gpt-6-astra'].map((id) => ({ id, nombre: id, esfuerzos: ESFUERZOS }));
   try {
     const cache = JSON.parse(readFileSync(path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'models_cache.json'), 'utf8'));
@@ -161,7 +163,7 @@ export function modelosDisponibles(): ModelosDisponibles {
       }));
     if (lista.length) codex = lista;
   } catch {}
-  return { claude: MODELOS_CLAUDE, codex, esfuerzos: ESFUERZOS, perfiles: PERFILES };
+  return { claude: MODELOS_CLAUDE, codex, opencode: [{ id: '', nombre: 'Modelo configurado en OpenCode', esfuerzos: [] }, ...(await openCodeModels()).map((id) => ({ id, nombre: id, esfuerzos: [] }))], esfuerzos: ESFUERZOS, perfiles: PERFILES };
 }
 
 /** Motor de un agente según el modo elegido (sin tener en cuenta si está instalado). */
@@ -178,6 +180,7 @@ export function modeloDe(ajustes: Ajustes, agente: string, motor: Motor): { mode
   const propio = ajustes.modelos?.[motor]?.[agente];
   const base = preset(motor, ajustes.perfil ?? 'equilibrado')[agente];
   const r: { modelo?: string; esfuerzo?: Esfuerzo } = { modelo: propio?.modelo ?? base?.modelo, esfuerzo: propio?.esfuerzo ?? base?.esfuerzo };
+  if (motor === 'opencode') r.esfuerzo = undefined;
   // Haiku no admite nivel de esfuerzo
   if (motor === 'claude' && r.modelo === 'haiku') r.esfuerzo = undefined;
   return r;

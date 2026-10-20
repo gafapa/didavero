@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { BookA, Download, FileType, Landmark, Pencil, Save, Trash2, Upload } from 'lucide-react';
+import { BookA, Download, FileType, Pencil, Save, Trash2, Upload } from 'lucide-react';
 import { api, urlDatos } from '../lib/api';
 import { useCampos } from '../lib/estado';
 import { AreaTexto, Boton, Insignia, confirmar } from './ui';
@@ -30,8 +30,8 @@ export function PestanaGlosario({ a }: { a: string }) {
     <div className="space-y-4">
       <div className="flex items-start gap-3">
         <p className="flex-1 text-sm text-texto-2">
-          Términos, definiciones y notación comunes a todos los documentos. Los agentes lo consultan para usar siempre los mismos nombres. El agente de
-          glosario lo completa a partir de los documentos y avisa de incoherencias entre ellos.
+          Términos, definiciones y notación comunes a todos los apuntes. Los agentes lo consultan para usar siempre los mismos nombres. El agente de
+          glosario lo completa a partir de los apuntes y avisa de incoherencias entre ellos.
         </p>
         {editando ? (
           <Boton variante="primario" icono={<Save className="size-4" />} onClick={guardar}>
@@ -58,7 +58,7 @@ export function PestanaGlosario({ a }: { a: string }) {
         {editando ? (
           <AreaTexto className="min-h-[50vh] border-0 font-mono text-[13px] focus:ring-0" value={texto} onChange={(e) => setTexto(e.target.value)} />
         ) : vacio ? (
-          <p className="py-6 text-center text-sm text-texto-3">El glosario está vacío. Pulsa «Actualizar con IA» cuando haya documentos redactados.</p>
+          <p className="py-6 text-center text-sm text-texto-3">El glosario está vacío. Pulsa «Actualizar con IA» cuando haya apuntes redactados.</p>
         ) : (
           <VistaPrevia texto={texto} base={urlDatos(a)} />
         )}
@@ -156,90 +156,4 @@ export function PestanaPlantillas({ a }: { a: string }) {
   );
 }
 
-const COMUNIDADES = [
-  'Andalucía', 'Aragón', 'Principado de Asturias', 'Illes Balears', 'Canarias', 'Cantabria', 'Castilla-La Mancha', 'Castilla y León',
-  'Cataluña', 'Comunitat Valenciana', 'Extremadura', 'Galicia', 'Comunidad de Madrid', 'Región de Murcia', 'Comunidad Foral de Navarra',
-  'País Vasco', 'La Rioja', 'Ceuta', 'Melilla',
-];
-
-/**
- * Currículo oficial de la asignatura (curriculo.md): resultados de aprendizaje y criterios en FP;
- * competencias, criterios y saberes básicos en ESO y Bachillerato. Lo busca un agente en la norma
- * oficial y se puede editar. El índice director lo usa y la revisión «Currículo» comprueba que los
- * apuntes cubren lo que les toca.
- */
-export function PestanaCurriculo({ a, comunidad, onComunidad }: { a: string; comunidad?: string; onComunidad: (c: string) => void }) {
-  const { avisar, versiones, reconexion, trabajos } = useCampos('avisar', 'versiones', 'reconexion', 'trabajos');
-  const version = `${versiones[`${a}/`] ?? 0}-${reconexion}`;
-  const [texto, setTexto] = useState('');
-  const [editando, setEditando] = useState(false);
-  const activos = Object.values(trabajos).filter((t) => t.asignatura === a && t.paso === 'curriculo' && (t.estado === 'ejecutando' || t.estado === 'en-cola'));
-
-  useEffect(() => {
-    if (!editando) api.curriculo(a).then((r) => setTexto(r.contenido)).catch(() => {});
-  }, [a, version, editando]);
-
-  const guardar = async () => {
-    await api.guardarCurriculo(a, texto).catch((e) => avisar(e.message, 'error'));
-    setEditando(false);
-    avisar('Currículo guardado', 'ok');
-  };
-
-  return (
-    <div className="space-y-4">
-      <div className="flex items-start gap-3">
-        <p className="flex-1 text-sm text-texto-2">
-          El currículo oficial de la asignatura, transcrito de la norma: en FP, los resultados de aprendizaje y criterios de evaluación del módulo; en
-          ESO y Bachillerato, las competencias específicas, los criterios de evaluación y los saberes básicos. El arquitecto del índice planifica cada
-          documento para cubrir lo que le toca, y la revisión «Currículo» comprueba que los apuntes lo cubren.
-        </p>
-        {editando ? (
-          <Boton variante="primario" icono={<Save className="size-4" />} onClick={guardar}>
-            Guardar
-          </Boton>
-        ) : (
-          <>
-            <Boton icono={<Pencil className="size-4" />} onClick={() => setEditando(true)}>
-              Editar
-            </Boton>
-            <BotonAgente
-              texto={texto.trim() ? 'Volver a buscar' : 'Buscar el currículo oficial'}
-              icono={<Landmark className="size-4" />}
-              disabled={activos.length > 0}
-              onLanzar={(ind) => api.buscarCurriculo(a, ind)}
-              ayudaIndicaciones="Por ejemplo: usa el Decreto de la Comunidad de Madrid, o el RD 1691/2007 del título…"
-            />
-          </>
-        )}
-      </div>
-      <label className="flex items-center gap-2 text-[13px] text-texto-2">
-        Comunidad autónoma
-        <select
-          value={comunidad ?? ''}
-          onChange={(e) => onComunidad(e.target.value)}
-          className="h-8 rounded-lg border border-borde bg-panel px-2 text-[13px] outline-none focus:border-acento cursor-pointer"
-        >
-          <option value="">Solo la norma estatal</option>
-          {COMUNIDADES.map((c) => (
-            <option key={c} value={c}>
-              {c}
-            </option>
-          ))}
-        </select>
-        <span className="text-[12px] text-texto-3">Su decreto concreta el currículo estatal.</span>
-      </label>
-      {activos.map((t) => (
-        <ActividadAgente key={t.id} t={t} />
-      ))}
-      <div className="rounded-xl border border-borde bg-panel px-6 py-5">
-        {editando ? (
-          <AreaTexto rows={24} className="font-mono text-[13px]" value={texto} onChange={(e) => setTexto(e.target.value)} />
-        ) : texto.trim() ? (
-          <VistaPrevia texto={texto} base={urlDatos(a)} />
-        ) : (
-          <p className="py-6 text-center text-sm text-texto-3">Aún no hay currículo. Pulsa «Buscar el currículo oficial» para que un agente lo localice en el BOE.</p>
-        )}
-      </div>
-    </div>
-  );
-}
+export { StructuredCurriculum as PestanaCurriculo } from './StructuredCurriculum';

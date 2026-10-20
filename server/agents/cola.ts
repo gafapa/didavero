@@ -1,3 +1,5 @@
+import { ENGINE_NAMES } from '../../shared/engines';
+import { openCodeInvocation, openCodeTokens } from './opencode';
 // Cola de trabajos de los agentes: ejecuta Claude/Codex con un límite de simultaneidad
 // y traduce su salida JSON a eventos legibles para la interfaz.
 //
@@ -63,6 +65,8 @@ const toml = (s: string) => (s.includes("'") ? JSON.stringify(s) : `'${s}'`);
 const CODEX_SIN_USAR = ['apps', 'browser_use', 'computer_use', 'memories', 'plugins', 'multi_agent', 'goals', 'hooks'];
 
 export interface Manejadores {
+  /** Recheck mutable limits immediately before a queued job can start a process. */
+  antesDeEjecutar?(t: Trabajo): Promise<void>;
   /**
    * Se ejecuta cuando el agente termina bien (también tras cada respuesta del usuario).
    * Si lanza un error, el trabajo se marca como fallido con ese mensaje y el usuario
@@ -111,7 +115,7 @@ const DIAS_CONSERVAR = 7;
 const INACTIVIDAD_MS = 12 * 60_000;
 /** Límite agotado sin hora de renovación conocida: se vuelve a probar pasado este tiempo. */
 const ESPERA_SIN_HORA_MS = 15 * 60_000;
-const NOMBRE_MOTOR: Record<Motor, string> = { claude: 'Claude', codex: 'Codex' };
+const NOMBRE_MOTOR: Record<Motor, string> = { claude: 'Claude', codex: 'Codex', opencode: 'OpenCode' };
 
 interface Seguimiento {
   proc: ChildProcess;
@@ -183,8 +187,12 @@ export class Cola extends EventEmitter {
       this.registros.set(t.id, r);
       if (t.estado !== 'ejecutando' && t.estado !== 'en-cola') continue;
 
-      // Por si el proceso de la sesión anterior siguiera vivo: se cierra antes de relanzar
-      if (r.pid && vivo(r.pid)) await new Promise<void>((ok) => treeKill(r.pid!, () => ok()));
+      // A persisted PID can have been reused by an unrelated process. Never kill or duplicate it blindly.
+      if (r.pid && vivo(r.pid)) {
+        r.pid = undefined;
+        this.terminar(t, 'error', 'No se ha reanudado la tarea: el proceso registrado sigue activo y no se puede confirmar su identidad. Comprueba la sesión anterior antes de reintentar.');
+        continue;
+      }
       r.pid = undefined;
       let prompt: string | undefined;
       if (t.estado === 'ejecutando' && t.sesion) {
@@ -423,8 +431,13 @@ export class Cola extends EventEmitter {
 
   private terminar(t: Trabajo, estado: Trabajo['estado'], texto?: string) {
     if (t.fin) return;
+    this.openCodeSteps.delete(t.id);
     t.estado = estado;
     t.fin = Date.now();
+    if (estado === 'error' && texto) {
+      if (t.resultado && t.resultado !== texto && !t.eventos.some(event => event.tipo === 'texto' && event.texto === t.resultado)) this.evento(t, 'texto', t.resultado);
+      t.resultado = texto;
+    }
     if (texto) this.evento(t, estado === 'error' ? 'error' : 'estado', texto);
     const s = this.seguimientos.get(t.id);
     if (s) clearInterval(s.sondeo);
@@ -447,13 +460,16 @@ export class Cola extends EventEmitter {
       .filter((t) => t.estado === 'en-cola' && this.prompts.has(t.id) && !this.pausas.has(t.motor))
       .sort((a, b) => a.creado - b.creado)[0];
     if (!pendiente) return;
-    this.ejecutar(pendiente);
+    void this.ejecutar(pendiente).catch(error => {
+      if (pendiente.estado === 'ejecutando') this.terminar(pendiente, 'error', (error as Error).message);
+    });
     this.siguiente();
   }
 
-  private ejecutar(t: Trabajo) {
+  private async ejecutar(t: Trabajo) {
     const r = this.registros.get(t.id)!;
     const p = r.peticion;
+    this.openCodeSteps.delete(t.id);
     const prompt = this.prompts.get(t.id) ?? '';
     this.prompts.delete(t.id);
     const ruta = rutaMotor(p.motor);
@@ -461,8 +477,11 @@ export class Cola extends EventEmitter {
     t.inicio = Date.now();
     r.ejecucion++;
     this.emitir(t);
+    try { await this.manejadores?.antesDeEjecutar?.(t); }
+    catch (error) { if (t.estado === 'ejecutando') this.terminar(t, 'error', (error as Error).message); return; }
+    if (t.estado !== 'ejecutando') return;
     if (!ruta) {
-      this.terminar(t, 'error', `No se encuentra ${p.motor === 'claude' ? 'Claude Code' : 'Codex'} en este equipo`);
+      this.terminar(t, 'error', `No se encuentra ${ENGINE_NAMES[p.motor]} en este equipo`);
       return;
     }
 
@@ -474,7 +493,8 @@ export class Cola extends EventEmitter {
     const mcpClaude = JSON.stringify({ mcpServers: p.mcp ? { fuentes: { command: p.mcp.comando, args: p.mcp.args, env: p.mcp.env ?? {} } } : {} });
     const archivoSistema = this.ruta(t.id, 'sistema.txt');
     if (p.motor === 'claude' && p.sistema) fs.writeFileSync(archivoSistema, p.sistema, 'utf8');
-    const args =
+    const openCode = p.motor === 'opencode' ? openCodeInvocation(p) : undefined;
+    const args = openCode ? openCode.args :
       p.motor === 'claude'
         ? [
             '-p',
@@ -531,7 +551,7 @@ ${prompt}` : prompt;
     const fds: number[] = [];
     try {
       fds.push(fs.openSync(archivoPrompt, 'r'), fs.openSync(archivoSalida, 'a'), fs.openSync(this.ruta(t.id, 'err.log'), 'w'));
-      proc = lanzar(ruta, args, { cwd: p.cwd, stdio: [fds[0], fds[1], fds[2]] });
+      proc = lanzar(ruta, args, { cwd: p.cwd, env: openCode?.env, stdio: [fds[0], fds[1], fds[2]] });
     } catch (e) {
       this.terminar(t, 'error', `No se pudo iniciar: ${e}`);
       return;
@@ -543,7 +563,7 @@ ${prompt}` : prompt;
       return;
     }
     r.pid = proc.pid;
-    this.evento(t, 'estado', `Iniciando ${p.motor === 'claude' ? 'Claude Code' : 'Codex'}…`);
+    this.evento(t, 'estado', `Iniciando ${ENGINE_NAMES[p.motor]}…`);
     this.seguir(t.id, proc.pid, proc);
   }
 
@@ -676,7 +696,7 @@ ${prompt}` : prompt;
       return;
     }
     const motor = this.registros.get(t.id)!.peticion.motor;
-    const r = motor === 'claude' ? this.traducirClaude(t, ev, silencioso) : this.traducirCodex(t, ev, silencioso);
+    const r = motor === 'opencode' ? this.translateOpenCode(t, ev, silencioso) : motor === 'claude' ? this.traducirClaude(t, ev, silencioso) : this.traducirCodex(t, ev, silencioso);
     if (r?.mensaje) s.ultimoMensaje = r.mensaje;
     if (r?.resultado !== undefined) t.resultado = r.resultado;
     if (r?.final) s.final = r.final;
@@ -736,12 +756,13 @@ ${prompt}` : prompt;
       .then((msg) => this.terminar(t, 'ok', msg || 'Terminado'))
       .catch((e) => {
         const r = this.registros.get(t.id);
-        if (e instanceof PedirAlAgente && r && t.sesion && (r.automaticas ?? 0) < MAX_RESPUESTAS_AUTOMATICAS) {
+        const automaticLimit = r?.peticion.agente === 'curriculo' || r?.peticion.paso === 'programacion' ? 1 : MAX_RESPUESTAS_AUTOMATICAS;
+        if (e instanceof PedirAlAgente && r && t.sesion && (r.automaticas ?? 0) < automaticLimit) {
           r.automaticas = (r.automaticas ?? 0) + 1;
           const s = this.seguimientos.get(t.id);
           if (s) clearInterval(s.sondeo);
           this.seguimientos.delete(t.id);
-          this.evento(t, 'estado', `${e.message} Se lo pido de nuevo al agente (intento ${r.automaticas} de ${MAX_RESPUESTAS_AUTOMATICAS}).`);
+          this.evento(t, 'estado', `${e.message} Se lo pido de nuevo al agente (intento ${r.automaticas} de ${automaticLimit}).`);
           return this.reanudar(r, e.paraAgente);
         }
         this.terminar(t, 'error', String(e?.message ?? e));
@@ -798,6 +819,34 @@ ${prompt}` : prompt;
         if (ev.is_error) return { error: String(ev.result ?? 'Error del agente'), final: 'error', tokens, limite: limiteEnTexto(String(ev.result ?? '')) };
         return { resultado: typeof ev.result === 'string' ? ev.result : undefined, final: 'ok', tokens };
       }
+    }
+  }
+
+  private openCodeSteps = new Map<string, Set<string>>();
+
+  private translateOpenCode(t: Trabajo, event: any, silent: boolean): Traduccion | void {
+    if (typeof event.sessionID === 'string') t.sesion = event.sessionID;
+    const part = event.part;
+    if (event.type === 'text' && typeof part?.text === 'string' && part.text.trim()) {
+      this.evento(t, 'texto', part.text.trim(), silent);
+      return { mensaje: part.text.trim() };
+    }
+    if (event.type === 'tool_use') {
+      this.evento(t, 'herramienta', describirHerramienta(String(part?.tool ?? 'OpenCode'), part?.state?.input ?? {}), silent);
+      return;
+    }
+    if (event.type === 'step_finish') {
+      const seen = this.openCodeSteps.get(t.id) ?? new Set<string>();
+      this.openCodeSteps.set(t.id, seen);
+      if (typeof part?.id === 'string') {
+        if (seen.has(part.id)) return;
+        seen.add(part.id);
+      }
+      return { tokens: openCodeTokens(part?.tokens) };
+    }
+    if (event.type === 'error') {
+      const message = String(event.error?.message ?? event.error?.data?.message ?? event.message ?? 'Error de OpenCode');
+      return { error: message, final: 'error', limite: limiteEnTexto(message) };
     }
   }
 

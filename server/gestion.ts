@@ -1,3 +1,5 @@
+import { ProgrammeProjects } from './programmeProjects';
+import { withProgrammeDirectory } from './programmeLifecycle';
 // Gestión de asignaturas y documentos: papelera (con restaurar), duplicar, copias de seguridad en .zip
 // y reunir en una carpeta lo exportado de varios documentos.
 import fs from 'node:fs/promises';
@@ -48,6 +50,14 @@ export async function listarPapelera(almacen: Almacen): Promise<ElementoPapelera
     }
     const asignatura = m[6].split('--')[0];
     const nombreAsignatura = async () => (await leerJson<Asignatura>(path.join(almacen.raiz, asignatura, 'asignatura.json')))?.nombre;
+    if (m[6].split('--')[1] === 'programacion') {
+      const programme = await leerJson<{ id: string; title: string; initialPurpose?: string }>(path.join(ruta, 'project.json'));
+      if (programme && typeof programme.title === 'string' && programme.id === m[6].split('--').slice(2).join('--')) {
+        const state = await leerJson<{ draft?: { title?: string } }>(path.join(ruta, programme.initialPurpose === 'opposition' ? 'opposition.json' : 'state.json'));
+        res.push({ id: e.name, tipo: 'programacion', titulo: state?.draft?.title || programme.title, asignatura, nombreAsignatura: await nombreAsignatura(), eliminado });
+      }
+      continue;
+    }
     const examen = await leerJson<{ titulo: string }>(path.join(ruta, 'examen.json'));
     if (examen) {
       res.push({ id: e.name, tipo: 'examen', titulo: examen.titulo, asignatura, nombreAsignatura: await nombreAsignatura(), eliminado });
@@ -76,6 +86,18 @@ export async function restaurarDePapelera(almacen: Almacen, id: string): Promise
         ? 'Su asignatura ya no existe: restaura antes la asignatura.'
         : 'Su asignatura ya no existe: restaura antes la asignatura (o duplica el documento en otra cuando esté restaurado).',
     );
+  }
+  if (elemento.tipo === 'programacion') {
+    const project = await leerJson<{ id: string }>(path.join(origen, 'project.json'));
+    if (!project) throw new ErrorUsuario('No se puede leer la programación de la papelera.');
+    const projects = new ProgrammeProjects(almacen.dirAsignatura(elemento.asignatura), almacen.curriculum(elemento.asignatura));
+    const destination = projects.projectDirectory(project.id);
+    await withProgrammeDirectory(destination, async () => {
+      if (existsSync(destination)) throw new ErrorUsuario('Ya existe una programación con ese identificador. Se conserva la copia de la papelera.', 409);
+      await fs.mkdir(path.dirname(destination), { recursive: true });
+      await fs.rename(origen, destination);
+    }, false);
+    return { asignatura: elemento.asignatura };
   }
   if (elemento.tipo === 'examen') {
     const base = almacen.dirExamenes(elemento.asignatura);
@@ -175,7 +197,7 @@ export async function crearCopia(almacen: Almacen, asignaturas: string[] | undef
   const ids = asignaturas?.length ? asignaturas : (await almacen.listarAsignaturas()).map((a) => a.id);
   if (!ids.length) throw new ErrorUsuario('No hay asignaturas que copiar');
   const zip = new JSZip();
-  zip.file(MANIFIESTO, JSON.stringify({ app: 'Apuntes IA', version, fecha: new Date().toISOString(), asignaturas: ids }, null, 2));
+  zip.file(MANIFIESTO, JSON.stringify({ app: 'Didavero', version, fecha: new Date().toISOString(), asignaturas: ids }, null, 2));
   for (const id of ids) {
     await almacen.obtenerAsignatura(id); // que exista
     await anadirCarpeta(zip, almacen.dirAsignatura(id), `${id}/`);
@@ -193,7 +215,7 @@ export async function restaurarCopia(almacen: Almacen, archivo: string): Promise
   // Raíces: carpetas de primer nivel con asignatura.json (o el zip entero, si la tiene en la raíz)
   const raices = nombres.filter((n) => /^[^/]+\/asignatura\.json$/.test(n)).map((n) => n.slice(0, n.indexOf('/') + 1));
   if (!raices.length && nombres.includes('asignatura.json')) raices.push('');
-  if (!raices.length) throw new ErrorUsuario('El .zip no contiene ninguna asignatura de Apuntes IA');
+  if (!raices.length) throw new ErrorUsuario('El .zip no contiene ninguna asignatura de Didavero');
   // Validate every subject before publishing any of them.
   const plans: { root: string; data: Asignatura; base: string }[] = [];
   for (const root of raices) {

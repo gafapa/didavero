@@ -1,7 +1,7 @@
 // Tipos compartidos entre el servidor y la interfaz.
 import type { BloqueActividad } from './actividades';
 
-export type Motor = 'claude' | 'codex';
+export type Motor = 'claude' | 'codex' | 'opencode';
 
 export interface Asignatura {
   id: string; // nombre de la carpeta
@@ -134,6 +134,7 @@ export interface VersionSeccion {
 }
 
 export interface Seccion {
+  revision?: string;
   archivo: string; // 01-introduccion.md
   titulo: string;
   palabras: number;
@@ -261,6 +262,7 @@ export interface ModeloDisponible {
 export interface ModelosDisponibles {
   claude: ModeloDisponible[];
   codex: ModeloDisponible[];
+  opencode: ModeloDisponible[];
   esfuerzos: Esfuerzo[];
   perfiles: Record<PerfilGasto, string>;
 }
@@ -279,6 +281,7 @@ export interface InfoAgente {
 // ---------- Flujo de trabajo de un documento ----------
 
 export type PasoFlujo =
+  | 'programacion'
   | 'chat'
   | 'investigacion'
   | 'indice'
@@ -491,7 +494,7 @@ export interface BusquedaImagenes {
 /** Asignatura o documento en la papelera (carpeta .papelera de los datos). */
 export interface ElementoPapelera {
   id: string; // nombre de la carpeta en la papelera
-  tipo: 'asignatura' | 'documento' | 'examen';
+  tipo: 'asignatura' | 'documento' | 'examen' | 'programacion';
   titulo: string;
   asignatura: string; // id de la asignatura (la propia o a la que pertenecía el documento)
   nombreAsignatura?: string; // de un documento, si su asignatura sigue existiendo

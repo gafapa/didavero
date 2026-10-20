@@ -1,3 +1,4 @@
+import { ENGINE_NAMES } from '../../../shared/engines';
 import { useEffect, useState } from 'react';
 import { ChevronRight, FileText, FolderOpen, Moon, Plus, Settings, Sun } from 'lucide-react';
 import { useCampos } from '../lib/estado';
@@ -32,7 +33,7 @@ export function BarraLateral() {
         <Logo className="size-8 shrink-0" />
         <div>
           <div className="flex items-center gap-1.5 font-titulo text-[17px] font-bold tracking-tight leading-tight">
-            Apuntes IA
+            Didavero
             {enVivo && (
               <span
                 title="Modo en vivo: los cambios en el código se aplican al guardar."
@@ -95,7 +96,7 @@ export function BarraLateral() {
                   </span>
                 </button>
                 <BotonIcono
-                  titulo="Nuevo documento"
+                  titulo="Nuevos apuntes"
                   className="size-6 opacity-0 group-hover:opacity-100 focus:opacity-100"
                   onClick={() => setNuevoDocEn(a.id)}
                 >
@@ -125,7 +126,7 @@ export function BarraLateral() {
                       onClick={() => setNuevoDocEn(a.id)}
                       className="px-2 py-1.5 text-[12.5px] text-texto-3 hover:text-acento-texto cursor-pointer"
                     >
-                      + Añadir documento
+                      + Añadir apuntes
                     </button>
                   )}
                 </div>
@@ -221,13 +222,13 @@ function PieBarra({ onAjustes }: { onAjustes: () => void }) {
       )}
       <ContadorTokensPie />
       <div className="flex items-center gap-1">
-        <div className="flex flex-1 items-center gap-3 text-[11.5px] text-texto-3">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] text-texto-3">
           {!conectado && <span className="text-error">Sin conexión</span>}
           {conectado &&
             motores?.map((m) => (
               <span key={m.motor} className="flex items-center gap-1.5" title={m.version ?? 'No instalado'}>
                 <span className={cx('size-1.5 rounded-full', m.instalado && m.sesion ? 'bg-ok' : m.instalado ? 'bg-aviso' : 'bg-texto-3/50')} />
-                {m.motor === 'claude' ? 'Claude' : 'Codex'}
+                {ENGINE_NAMES[m.motor]}
               </span>
             ))}
         </div>

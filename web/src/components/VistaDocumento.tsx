@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import type { Documento, Permisos, Seccion } from '../../../shared/tipos';
 import { permisosEfectivos } from '../../../shared/tipos';
+import { loadSectionContents, type SectionContentCache } from '../lib/sectionContents';
 import { EditorPermisos } from './EditorPermisos';
 import { BotonAgente } from './flujo/comun';
 import { api, urlDatos } from '../lib/api';
@@ -89,7 +90,7 @@ export function VistaDocumento({ asignatura, documento }: { asignatura: string; 
           <span className="shrink-0 text-texto-2">{paso?.titulo ?? { apuntes: 'Apuntes', recursos: 'Imágenes', material: 'Fuentes', ficha: 'Ficha' }[vista as string]}</span>
           {destinatarios && (
             <Insignia color={doc.destinatarios.trim() ? 'acento' : 'neutro'} className="ml-2 max-w-80 truncate">
-              <span className="truncate" title={`Destinatarios${doc.destinatarios.trim() ? ' propios del documento' : ' de la asignatura'}: ${destinatarios}`}>
+              <span className="truncate" title={`Destinatarios${doc.destinatarios.trim() ? ' propios de estos apuntes' : ' de la asignatura'}: ${destinatarios}`}>
                 Para: {destinatarios}
               </span>
             </Insignia>
@@ -129,7 +130,7 @@ export function VistaDocumento({ asignatura, documento }: { asignatura: string; 
             <GestorFuentes
               asignatura={asignatura}
               documento={documento}
-              descripcion="Fuentes de consulta de este documento (opcional): apuntes del profesor, diapositivas, artículos, imágenes… Los agentes las leen para investigar y redactar, pero no aparecen en los apuntes. Si no aportas nada, investigarán por su cuenta."
+              descripcion="Fuentes de consulta de estos apuntes (opcional): apuntes del profesor, diapositivas, artículos, imágenes… Los agentes las leen para investigar y redactar, pero no aparecen en los apuntes. Si no aportas nada, investigarán por su cuenta."
             />
           </div>
         </div>
@@ -154,6 +155,7 @@ const Apuntes = memo(function Apuntes({ asignatura, documento }: { asignatura: s
   const [verHistorial, setVerHistorial] = useState(false);
   const [modo, setModo] = useState<Modo>(() => (localStorage.getItem('modoEditor') as Modo) || 'dividido');
   const [completo, setCompleto] = useState<{ archivo: string; texto: string }[]>([]);
+  const completeCache = useRef<{ scope: string; cache: SectionContentCache }>({ scope: '', cache: new Map() });
   const guardadoRef = useRef(''); // último contenido sincronizado con el disco
   const textoRef = useRef(texto);
   textoRef.current = texto;
@@ -203,11 +205,15 @@ const Apuntes = memo(function Apuntes({ asignatura, documento }: { asignatura: s
   // Documento completo
   useEffect(() => {
     if (activa !== TODO) return;
-    // Cada sección por separado, para saber de cuál es lo que se selecciona en la vista previa
-    Promise.all(secciones.map((s) => api.leerSeccion(asignatura, documento, s.archivo).then((r) => ({ archivo: s.archivo, texto: r.contenido })))).then(
-      setCompleto,
-    );
-  }, [activa, secciones, asignatura, documento]);
+    let current = true;
+    const scope = `${asignatura}/${documento}/${reconexion}`;
+    const previous = completeCache.current.scope === scope ? completeCache.current.cache : new Map();
+    loadSectionContents(secciones, previous, filename => api.leerSeccion(asignatura, documento, filename)).then(result => {
+      if (!current) return;
+      completeCache.current = { scope, cache: result.cache }; setCompleto(result.contents);
+    }).catch(error => { if (current) avisar(error.message, 'error'); });
+    return () => { current = false; };
+  }, [activa, secciones, asignatura, documento, reconexion, avisar]);
 
   // Cambios en disco (normalmente, un agente escribiendo)
   useEffect(() => {
@@ -301,7 +307,7 @@ const Apuntes = memo(function Apuntes({ asignatura, documento }: { asignatura: s
   };
 
   const eliminar = async (s: Seccion) => {
-    if (!(await confirmar(`¿Eliminar la sección «${s.titulo}»?`, { texto: 'No se puede deshacer.', boton: 'Eliminar', peligro: true }))) return;
+    if (!(await confirmar(`¿Eliminar la sección «${s.titulo}»?`, { texto: 'No se puede deshacer.', boton: 'Mover a la papelera', peligro: true }))) return;
     await vaciarPendiente();
     await api.eliminarSeccion(asignatura, documento, s.archivo);
     const lista = await cargarSecciones();
@@ -335,7 +341,7 @@ const Apuntes = memo(function Apuntes({ asignatura, documento }: { asignatura: s
             )}
           >
             <BookOpenText className="size-4" />
-            Documento completo
+            Apuntes completos
           </button>
           {secciones.map((s, i) => (
             <div
@@ -378,7 +384,7 @@ const Apuntes = memo(function Apuntes({ asignatura, documento }: { asignatura: s
             {secciones.length === 0 ? (
               <Vacio
                 icono={<FileText className="size-6" />}
-                titulo="El documento está vacío"
+                titulo="Los apuntes están vacíos"
                 texto="Crea la primera sección o pide a la IA (panel de la derecha) que proponga un índice y redacte los apuntes."
                 accion={
                   <Boton variante="primario" icono={<Plus className="size-4" />} onClick={nuevaSeccion}>
@@ -527,7 +533,7 @@ function FichaDocumento({
     setGuardando(true);
     try {
       onGuardado(await api.guardarDocumento(doc.asignatura, doc.id, f));
-      avisar('Documento guardado', 'ok');
+      avisar('Apuntes guardados', 'ok');
     } catch (e) {
       avisar((e as Error).message, 'error');
     } finally {
@@ -537,8 +543,8 @@ function FichaDocumento({
 
   const eliminar = async () => {
     const ok = await confirmar(`¿Eliminar «${doc.titulo}»?`, {
-      texto: 'Se moverá a la papelera, de donde podrás recuperarlo (pantalla de inicio → Papelera).',
-      boton: 'Eliminar',
+      texto: 'Se moverán los apuntes completos a la papelera. Puedes recuperarlos en Inicio → Papelera.',
+      boton: 'Mover a la papelera',
       peligro: true,
     });
     if (!ok) return;
@@ -556,10 +562,10 @@ function FichaDocumento({
         <AreaTexto rows={3} value={f.objetivo} onChange={(e) => setF({ ...f, objetivo: e.target.value })} />
       </Campo>
       <Campo
-        etiqueta="Destinatarios de este documento"
+        etiqueta="Destinatarios de estos apuntes"
         ayuda={
           destinatariosAsignatura
-            ? `Vacío = los de la asignatura: «${destinatariosAsignatura}». Rellénalo solo si este documento va dirigido a otras personas.`
+            ? `Vacío = los de la asignatura: «${destinatariosAsignatura}». Rellénalo solo si estos apuntes van dirigidos a otras personas.`
             : 'Vacío = los de la asignatura.'
         }
       >
@@ -568,12 +574,12 @@ function FichaDocumento({
       <Campo etiqueta="Extensión orientativa">
         <Entrada value={f.extension} onChange={(e) => setF({ ...f, extension: e.target.value })} placeholder="10-15 páginas" />
       </Campo>
-      <Campo etiqueta="Qué pueden usar los agentes" ayuda="Por defecto, lo mismo que la asignatura. Cambia solo lo que este documento necesite distinto.">
+      <Campo etiqueta="Qué pueden usar los agentes" ayuda="Por defecto, lo mismo que la asignatura. Cambia solo lo que estos apuntes necesiten distinto.">
         <EditorPermisos valor={f.permisos} onCambio={(permisos) => setF({ ...f, permisos })} heredados={permisosEfectivos(permisosAsignatura)} />
       </Campo>
       <Campo
         etiqueta="Tope de tokens"
-        ayuda={`Al llegar a él no se lanzan más agentes en este documento (los que estén trabajando terminan). Lleva gastados ${abreviar(gastado)} (entrada + salida).`}
+        ayuda={`Al llegar a él no se lanzan más agentes en estos apuntes (los que estén trabajando terminan). Lleva gastados ${abreviar(gastado)} (entrada + salida).`}
       >
         <div className="flex flex-wrap items-center gap-1.5">
           {TOPES.map(([n, nombre]) => (
@@ -626,7 +632,7 @@ function FichaDocumento({
       <div className="mt-6 rounded-xl border border-borde px-5 py-4">
         <div className="text-sm font-medium">Versiones adaptadas</div>
         <p className="mt-0.5 text-[12.5px] text-texto-3">
-          Atención a la diversidad: crea una copia del documento (con sus imágenes y su índice) y un redactor adapta cada sección. El original no cambia.
+          Atención a la diversidad: crea una copia de los apuntes (con sus imágenes y su índice) y un redactor adapta cada sección. El original no cambia.
         </p>
         <div className="mt-3 flex flex-wrap gap-2">
           {(
@@ -655,7 +661,7 @@ function FichaDocumento({
       </div>
       <div className="mt-6 flex items-center justify-between rounded-xl border border-borde px-5 py-4">
         <div>
-          <div className="text-sm font-medium">Duplicar documento</div>
+          <div className="text-sm font-medium">Duplicar apuntes</div>
           <div className="text-xs text-texto-3">Una copia en esta asignatura o en otra, para adaptarla a otro grupo o nivel.</div>
         </div>
         <Boton tam="sm" icono={<Copy className="size-3.5" />} onClick={() => setDuplicando(true)}>
@@ -664,7 +670,7 @@ function FichaDocumento({
       </div>
       <div className="flex items-center justify-between rounded-xl border border-error/30 px-5 py-4">
         <div>
-          <div className="text-sm font-medium">Eliminar documento</div>
+          <div className="text-sm font-medium">Eliminar apuntes</div>
           <div className="text-xs text-texto-3">Se mueve a la papelera (se puede restaurar desde la pantalla de inicio).</div>
         </div>
         <Boton tam="sm" icono={<Trash2 className="size-3.5" />} onClick={eliminar} className="text-error">

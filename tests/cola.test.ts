@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Cola, limiteEnTexto } from '../server/agents/cola';
+import { Cola, limiteEnTexto, PedirAlAgente } from '../server/agents/cola';
 import type { Trabajo } from '../shared/tipos';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'apuntes-cola-'));
@@ -51,6 +51,41 @@ test('un trabajo que termina bien', async () => {
   assert.ok(t.sesion);
 });
 
+test('post-processing errors replace a successful model message while preserving it in the event history', async () => {
+  const previous = cola.manejadores;
+  cola.manejadores = { alTerminar: async () => { throw new Error('Specific validation failure'); }, alFallar: () => {} };
+  try {
+    const job = cola.encolar({ agente: 'prueba', nombreAgente: 'Fixture', motor: 'claude', titulo: 'Post-processing fixture', asignatura: 'a', prompt: 'MODO:OK validation', cwd: dir, post: { tipo: 'programme-research', datos: {} } });
+    await esperar(() => job.estado === 'error');
+    assert.equal(job.resultado, 'Specific validation failure');
+    assert.ok(job.eventos.some(event => event.tipo === 'texto' && event.texto.includes('Hecho')));
+  } finally { cola.manejadores = previous; }
+});
+
+test('curriculum and programme corrections stop after one automatic retry while other tasks keep their limit', async () => {
+  const previousHandlers = cola.manejadores;
+  let completions = 0;
+  cola.manejadores = {
+    alTerminar: async () => { completions++; throw new PedirAlAgente('Invalid fixture', 'MODO:OK repair-fixture'); },
+    alFallar: async () => {},
+  };
+  try {
+    const curriculum = cola.encolar({ agente: 'curriculo', nombreAgente: 'Curriculum fixture', motor: 'claude', titulo: 'Retry fixture', asignatura: 'a', prompt: 'MODO:OK curriculum-fixture', cwd: dir, post: { tipo: 'curriculo' } });
+    await esperar(() => curriculum.estado === 'error');
+    assert.equal(completions, 2);
+    assert.equal(curriculum.eventos.filter((event) => /Se lo pido de nuevo/.test(event.texto)).length, 1);
+    completions = 0;
+    const programme = cola.encolar({ agente: 'arquitecto', nombreAgente: 'Programme fixture', motor: 'claude', titulo: 'Missing output fixture', asignatura: 'a', paso: 'programacion', prompt: 'MODO:OK programme-fixture', cwd: dir, post: { tipo: 'programme-generate' } });
+    await esperar(() => programme.estado === 'error');
+    assert.equal(completions, 2);
+    assert.equal(programme.eventos.filter((event) => /Se lo pido de nuevo/.test(event.texto)).length, 1);
+    completions = 0;
+    const other = cola.encolar({ agente: 'prueba', nombreAgente: 'Other fixture', motor: 'claude', titulo: 'Retry fixture', asignatura: 'a', prompt: 'MODO:OK other-fixture', cwd: dir, post: { tipo: 'prueba' } });
+    await esperar(() => other.estado === 'error');
+    assert.equal(completions, 3);
+  } finally { cola.manejadores = previousHandlers; }
+});
+
 test('reintentar desde el principio un trabajo fallido', async () => {
   const t = encolar('MODO:FALLA dos');
   await esperar(() => t.estado === 'error');
@@ -58,6 +93,44 @@ test('reintentar desde el principio un trabajo fallido', async () => {
   assert.equal(t.estado === 'en-cola' || t.estado === 'ejecutando', true);
   await esperar(() => t.estado === 'ok');
   assert.ok(t.eventos.some((e) => e.texto === 'Reintento desde el principio'));
+});
+
+test('queued jobs recheck mutable limits before launching the next process', async () => {
+  const previous = cola.manejadores, capacity = cola.maxSimultaneos;
+  let spent = 0, checks = 0;
+  cola.maxSimultaneos = 1;
+  cola.manejadores = { antesDeEjecutar: async () => { checks++; if (spent >= 10) throw Error('Fixture budget exhausted'); }, alTerminar: async () => { spent = 10; }, alFallar: async () => {} };
+  try {
+    const first = cola.encolar({ agente: 'prueba', nombreAgente: 'Fixture', motor: 'claude', titulo: 'First budget fixture', asignatura: 'a', prompt: 'MODO:OK budget-first', cwd: dir, post: { tipo: 'prueba' } });
+    const second = encolar('MODO:OK budget-second');
+    await esperar(() => first.estado === 'ok' && second.estado === 'error');
+    assert.equal(checks, 2); assert.equal(second.resultado, 'Fixture budget exhausted');
+    assert.ok(!second.eventos.some(event => event.texto.startsWith('Conectado')));
+  } finally { cola.manejadores = previous; cola.maxSimultaneos = capacity; }
+});
+
+test('queue restart resumes a persisted interrupted session without killing reused live PIDs', async () => {
+  const directory = path.join(dir, 'restart-fixture'), previous = new Cola(1, directory);
+  const job = previous.encolar({ agente: 'prueba', nombreAgente: 'Fixture', motor: 'claude', titulo: 'Restart fixture', asignatura: 'a', prompt: 'MODO:OK restart-fixture', cwd: dir });
+  await esperar(() => job.estado === 'ok'); await previous.flush();
+  const filename = path.join(directory, job.id + '.json'), stored = JSON.parse(fs.readFileSync(filename, 'utf8'));
+  stored.trabajo.estado = 'ejecutando'; delete stored.trabajo.fin; delete stored.pid;
+  fs.writeFileSync(filename, JSON.stringify(stored));
+  const restarted = new Cola(1, directory);
+  try {
+    await restarted.cargar(); await esperar(() => restarted.obtener(job.id)?.estado === 'ok');
+    assert.ok(restarted.obtener(job.id)?.eventos.some(event => event.texto === 'Continúo.'));
+    await restarted.flush();
+    const live = JSON.parse(fs.readFileSync(filename, 'utf8'));
+    live.trabajo.estado = 'ejecutando'; delete live.trabajo.fin; live.pid = process.pid;
+    fs.writeFileSync(filename, JSON.stringify(live));
+    const reused = new Cola(1, directory);
+    await reused.cargar();
+    assert.equal(reused.obtener(job.id)?.estado, 'error');
+    assert.match(reused.obtener(job.id)!.resultado!, /identidad/);
+    process.kill(process.pid, 0);
+    await reused.flush();
+  } finally { restarted.detenerTodo(); await restarted.flush(); }
 });
 
 test('límite de uso: el motor se pausa y los trabajos siguen solos al renovarse', async () => {

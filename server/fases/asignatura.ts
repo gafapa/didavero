@@ -3,6 +3,16 @@ import type { ResultadoBusqueda, TipoBusqueda } from '../../shared/tipos';
 import { ErrorUsuario } from '../store';
 import { DESCRIPCION_TIPO, descargarFuente, guardarResultados, leerResultados } from '../buscador';
 import { FlujoImportacion } from './importacion';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import type { Trabajo } from '../../shared/tipos';
+import type { CurriculumProfile } from '../../shared/curriculum';
+import { curriculumProfileFromContext } from '../../shared/curriculum';
+import { parseCurriculumDraft } from '../curriculumStore';
+import { suggestedCurriculumProfile, curriculumExtractionTask } from '../curriculumExtraction';
+import { extraerJson } from '../texto';
+import { PedirAlAgente } from '../agents/cola';
+import { reviewCurriculumExtraction, CurriculumNeedsInformation } from '../curriculumExtractionReview';
 
 export class FlujoAsignatura extends FlujoImportacion {
 
@@ -96,36 +106,52 @@ No descargues nada ni modifiques otros archivos. Escribe los resultados en \`${s
   // ---------------------------------------------------------------------------
   // Glosario de la asignatura
 
-  /** Busca el currículo oficial de la asignatura y lo transcribe en curriculo.md. */
-  async buscarCurriculo(asig: string, indicaciones?: string) {
+  /** Extract a reviewable proposal without replacing the active curriculum. */
+  async buscarCurriculo(asig: string, indicaciones?: string, options?: { profile?: CurriculumProfile }) {
     if (this.ocupado('curriculo', asig, undefined)) throw new ErrorUsuario('Ya se está buscando el currículo');
-    const a = await this.almacen.obtenerAsignatura(asig);
-    const fp = a.etapa?.startsWith('fp-');
+    const subject = await this.almacen.obtenerAsignatura(asig);
+    const store = this.almacen.curriculum(asig);
+    const state = await store.read();
+    if (state.draft && (state.draft.elements.length || state.draft.sources.length || state.draft.links.length)) throw new ErrorUsuario('Ya hay un borrador. Revísalo y actívalo antes de iniciar otra extracción.');
+    const contextProfile = suggestedCurriculumProfile(subject);
+    const requestedProfile = parseCurriculumDraft({ profile: options?.profile ?? contextProfile, sources: [], elements: [], links: [] }).profile;
+    const profile = curriculumProfileFromContext(requestedProfile, contextProfile);
+    if (!profile.stage || !profile.course || !/^\d{4}-\d{4}$/.test(profile.academicYear)) throw new ErrorUsuario('Completa la enseñanza, curso o ciclo y curso académico antes de buscar.');
+    const output = this.salida('curriculum');
     return this.lanzar({
       agente: 'curriculo',
       asignatura: asig,
-      titulo: 'Buscar el currículo oficial',
+      titulo: 'Obtener el currículo estructurado',
       paso: 'curriculo',
       web: true,
+      fuentes: false,
+      esfuerzo: 'medium',
       indicaciones,
-      tarea: `Busca el currículo oficial de esta asignatura y transcríbelo en \`curriculo.md\`.
-${
-  fp
-    ? `Es un módulo de Formación Profesional: localiza el real decreto del título${a.titulo ? ` «${a.titulo}»` : ''} en el BOE y, dentro de él, el módulo «${a.nombre}». Transcribe sus **resultados de aprendizaje** con sus **criterios de evaluación** (RA1 con a), b), c)…) y, si el decreto los incluye, los contenidos básicos y la duración.`
-    : `Es una materia de ${a.nivel || 'la enseñanza indicada'}: localiza el real decreto de enseñanzas mínimas (LOMLOE) que corresponda y transcribe, para ESTE curso, las **competencias específicas**, los **criterios de evaluación** (con su numeración, p. ej. 1.1, 1.2) y los **saberes básicos**.`
-}
-${
-  a.comunidad
-    ? `La comunidad autónoma es ${a.comunidad}: busca también su decreto u orden propios y, si concretan o amplían el currículo estatal, usa su versión e indícalo.`
-    : 'Si no se indica la comunidad autónoma, usa la norma estatal.'
-}
-Formato de \`curriculo.md\`:
-- \`# Currículo oficial: <asignatura>\`
-- Una línea \`Fuente:\` con la norma (nombre, fecha) y su enlace al BOE o al boletín autonómico.
-- Los apartados del currículo con su numeración original, transcritos literalmente (sin resumir).
-Usa solo fuentes oficiales (boe.es, boletines autonómicos, webs de las consejerías o del ministerio). Si no encuentras la norma con seguridad, escríbelo en el archivo en lugar de inventar. No toques otros archivos.`,
-      post: { tipo: 'curriculo', datos: {} },
+      tarea: curriculumExtractionTask(profile, output),
+      post: { tipo: 'curriculo', datos: { output, expectedRevision: state.revision, profile } },
     });
+  }
+
+  protected async postStructuredCurriculum(job: Trabajo, data: Record<string, unknown>) {
+    const store = this.almacen.curriculum(job.asignatura);
+    if ((await store.read()).appliedJobs.includes(job.id)) return 'Propuesta de currículo ya incorporada.';
+    let result: unknown;
+    try {
+      const directory = this.almacen.dirAsignatura(job.asignatura);
+      const output = path.resolve(directory, String(data.output));
+      if (!output.startsWith(path.resolve(directory, '.agentes') + path.sep)) throw new Error('Invalid output path');
+      const stat = await fs.stat(output);
+      if (stat.size > 20 * 1024 * 1024) throw new Error('El resultado supera los 20 MB. Extrae solo la materia o módulo solicitado.');
+      result = reviewCurriculumExtraction(extraerJson(await fs.readFile(output, 'utf8')), data.profile as CurriculumProfile);
+    } catch (error) {
+      if (error instanceof CurriculumNeedsInformation) throw new ErrorUsuario(error.message);
+        throw new PedirAlAgente('La extracción del currículo necesita correcciones.', `Corrige SOLO el JSON de ${String(data.output)} usando las fuentes ya consultadas. Conserva textos correctos e IDs; no alteres el inventario para ocultar omisiones. Consulta de nuevo solo el apartado que falte, sin repetir la búsqueda general. Omite excerpt si coincide con text. Comprobaciones fallidas:\n${(error as Error).message.slice(0, 3000)}`);
+    }
+    await store.acceptExtraction(result, Number(data.expectedRevision), job.id);
+    const pendingApplicability = (result as { sources: { notes: string }[] }).sources.some((source) => source.notes.includes('Pendiente de verificar la aplicabilidad'));
+    return pendingApplicability
+      ? 'Borrador guardado con la aplicabilidad temporal pendiente. Revisa las dudas indicadas en Fuentes, contrasta los textos y comprueba la integridad antes de activarlo.'
+      : 'Borrador estructurado guardado. Revisa los elementos, relaciones y fuentes y comprueba su integridad antes de activarlo.';
   }
 
   async glosario(asig: string, indicaciones?: string) {

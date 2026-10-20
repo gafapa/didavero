@@ -34,7 +34,9 @@ import type {
   ElementoPapelera,
 } from '../../../shared/tipos';
 import type { BloqueActividad, OpcionesActividad, TipoActividad } from '../../../shared/actividades';
-import type { Examen, OpcionesExamen, PreguntaExamen } from '../../../shared/examenes';
+import type { CurriculumDraft, CurriculumProfile, CurriculumResponse, CurriculumState } from '../../../shared/curriculum';
+import type { CreateProgrammeRequest, ProgrammeExportFormat, ProgrammeProject, ProgrammeProjectSummary, ProgrammePurpose, ProgrammeResponse, ProgrammeState, TeachingProgramme } from '../../../shared/teachingProgramme';
+import type { Examen, OpcionesExamen, PreguntaExamen, ExamAdaptationRequest } from '../../../shared/examenes';
 
 async function pedir<T>(metodo: string, url: string, cuerpo?: unknown): Promise<T> {
   const r = await fetch(url, {
@@ -74,6 +76,25 @@ export interface Molecula {
 export type AsignaturaResumen = Asignatura & { documentos: Documento[] };
 
 export const api = {
+  programmes: (a: string) => pedir<ProgrammeProjectSummary[]>('GET', `${asig(a)}/programaciones`),
+  researchProgramme: (a: string, id: string, purpose: ProgrammePurpose) => pedir<Trabajo>('POST', `${asig(a)}/programaciones/${e(id)}/investigar?purpose=${purpose}`, {}),
+  deleteProgramme: (a: string, id: string) => pedir<{ ok: true }>('DELETE', `${asig(a)}/programaciones/${e(id)}`),
+  createProgramme: (a: string, input: CreateProgrammeRequest) => pedir<ProgrammeProject>('POST', `${asig(a)}/programaciones`, input),
+  programme: (a: string, id: string, purpose: ProgrammePurpose = 'classroom') => pedir<ProgrammeResponse>('GET', `${asig(a)}/programaciones/${e(id)}?purpose=${purpose}`),
+  saveProgramme: (a: string, id: string, programme: TeachingProgramme, expectedRevision: number, confirmed?: boolean) => pedir<ProgrammeState>('PUT', `${asig(a)}/programaciones/${e(id)}?purpose=${programme.purpose}`, { programme, expectedRevision, confirmed }),
+  exportProgramme: async (a: string, id: string, programme: TeachingProgramme, format: ProgrammeExportFormat, reviewed = false) => {
+    const result = await fetch(`${asig(a)}/programaciones/${e(id)}/exportar?purpose=${programme.purpose}&format=${format}&reviewed=${reviewed}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ programme }),
+    });
+    if (!result.ok) throw new Error((await result.json().catch(() => ({}))).error ?? 'No se pudo exportar la programación.');
+    const filename = /filename="([^"]+)"/.exec(result.headers.get('content-disposition') ?? '')?.[1] ?? `programacion.${format}`;
+    const url = URL.createObjectURL(await result.blob());
+    Object.assign(document.createElement('a'), { href: url, download: filename }).click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 60000);
+  },
+  helpProgrammeUnits: (a: string, id: string, expectedRevision: number, instructions: string, purpose: ProgrammePurpose, unitId?: string) => pedir<Trabajo>('POST', `${asig(a)}/programaciones/${e(id)}/ayuda-unidades?purpose=${purpose}`, { expectedRevision, instructions, unitId }),
+  applyProgrammeUnits: (a: string, id: string, purpose: ProgrammePurpose, jobId: string, expectedRevision: number) => pedir<ProgrammeState>('POST', `${asig(a)}/programaciones/${e(id)}/ayuda-unidades/aplicar?purpose=${purpose}`, { jobId, expectedRevision }),
+  generateProgramme: (a: string, id: string, expectedRevision: number, instructions: string, purpose: ProgrammePurpose = 'classroom') => pedir<Trabajo>('POST', `${asig(a)}/programaciones/${e(id)}/generar?purpose=${purpose}`, { expectedRevision, instructions }),
   ajustes: () => pedir<Ajustes>('GET', '/api/ajustes'),
   guardarAjustes: (a: Partial<Ajustes>) => pedir<Ajustes>('PUT', '/api/ajustes', a),
   motores: () => pedir<EstadoMotor[]>('GET', '/api/motores'),
@@ -110,6 +131,8 @@ export const api = {
   eliminarSeccion: (a: string, d: string, s: string) => pedir('DELETE', `${doc(a, d)}/secciones/${e(s)}`),
 
   fuentes: (a: string, d?: string) => pedir<Fuente[]>('GET', `${d ? doc(a, d) : asig(a)}/fuentes`),
+  renameSource: (subjectId: string, filename: string, name: string, expectedModified: string, documentId?: string) =>
+    pedir<Fuente>('PUT', `${documentId ? doc(subjectId, documentId) : asig(subjectId)}/fuentes/${e(filename)}`, { name, expectedModified }),
   subirFuentes: async (a: string, archivos: File[], d?: string) => {
     const fd = new FormData();
     for (const f of archivos) fd.append('archivo', f, f.name);
@@ -220,6 +243,7 @@ export const api = {
   guardarExamen: (a: string, id: string, datos: { titulo?: string; opciones?: Partial<OpcionesExamen> }) => pedir<Examen>('PUT', exa(a, id), datos),
   eliminarExamen: (a: string, id: string) => pedir('DELETE', exa(a, id)),
   generarExamen: (a: string, id: string, opciones?: Partial<OpcionesExamen>) => pedir<Trabajo>('POST', `${exa(a, id)}/generar`, { opciones }),
+  adaptExam: (a: string, id: string, request: ExamAdaptationRequest) => pedir<Examen>('POST', `${exa(a, id)}/adaptations`, request),
   ajustarPuntuacion: (a: string, id: string, total?: number) => pedir<Examen>('POST', `${exa(a, id)}/puntuacion`, { total }),
   ordenarPreguntasExamen: (a: string, id: string, ids: string[]) => pedir<Examen>('POST', `${exa(a, id)}/orden`, { ids }),
   nuevaPreguntaExamen: (a: string, id: string, tipo: TipoActividad, indicaciones?: string) => pedir<Trabajo>('POST', `${exa(a, id)}/preguntas`, { tipo, indicaciones }),
@@ -242,9 +266,12 @@ export const api = {
   abrirCarpetaExamen: (a: string, id: string) => pedir('POST', `${exa(a, id)}/carpeta`),
 
   glosario: (a: string) => pedir<{ contenido: string }>('GET', `${asig(a)}/glosario`),
-  curriculo: (a: string) => pedir<{ contenido: string }>('GET', `${asig(a)}/curriculo`),
-  guardarCurriculo: (a: string, contenido: string) => pedir('PUT', `${asig(a)}/curriculo`, { contenido }),
-  buscarCurriculo: (a: string, indicaciones?: string) => pedir<Trabajo>('POST', `${asig(a)}/curriculo/buscar`, { indicaciones }),
+  buscarCurriculo: (a: string, indicaciones?: string, options?: { profile: CurriculumProfile }) => pedir<Trabajo>('POST', `${asig(a)}/curriculo/buscar`, { indicaciones, ...options }),
+  structuredCurriculum: (a: string) => pedir<CurriculumResponse>('GET', `${asig(a)}/curriculo`),
+  saveCurriculumDraft: (a: string, draft: CurriculumDraft, expectedRevision: number) => pedir<CurriculumState>('PUT', `${asig(a)}/curriculo`, { draft, expectedRevision }),
+  activateCurriculum: (a: string, expectedRevision: number, review?: { draft: CurriculumDraft; confirmed: boolean }) => pedir<CurriculumState>('POST', `${asig(a)}/curriculo/activar`, { expectedRevision, ...(review ? { review } : {}) }),
+  discardCurriculumDraft: (a: string, expectedRevision: number) => pedir<CurriculumState>('DELETE', `${asig(a)}/curriculo`, { expectedRevision }),
+  restoreCurriculumDraft: (a: string, versionId: string, expectedRevision: number) => pedir<CurriculumState>('POST', `${asig(a)}/curriculo/restaurar`, { versionId, expectedRevision }),
   guardarGlosario: (a: string, contenido: string) => pedir('PUT', `${asig(a)}/glosario`, { contenido }),
   actualizarGlosario: (a: string, indicaciones?: string) => pedir<Trabajo>('POST', `${asig(a)}/glosario/actualizar`, { indicaciones }),
   plantillas: (a: string) => pedir<{ docx: boolean; odt: boolean }>('GET', `${asig(a)}/plantillas`),

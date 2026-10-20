@@ -9,7 +9,7 @@ await build({
   bundle: true,
   platform: 'node',
   format: 'cjs',
-  target: 'node22',
+  target: 'node24',
   packages: 'external',
   sourcemap: true,
   logLevel: 'info',

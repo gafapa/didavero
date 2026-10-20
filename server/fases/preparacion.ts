@@ -43,10 +43,10 @@ Consulta el material aportado (\`fuentes/\`, \`../../fuentes/\`) y fuentes fiabl
       tarea: tarea ?? `Elabora el dossier de investigación del documento y guárdalo en \`investigacion.md\`${existe ? ' (ya existe: amplíalo y mejóralo, conservando lo valioso)' : ''}.
 
 1. Revisa el material aportado en \`fuentes/\` y \`../../fuentes/\` si lo hay. Si tienes la herramienta \`buscar_en_fuentes\`, úsala (empieza con \`listar_fuentes\`) en lugar de leer los documentos enteros; si no, lee los archivos (para .docx, .odt y .pptx usa su versión de texto en \`.texto/\`). Las imágenes míralas directamente.
-2. Busca en la web lo necesario para cubrir el objetivo del documento con rigor (entre 5 y 12 fuentes fiables).
+2. Busca en la web solo lo necesario para cubrir el objetivo con rigor, con un máximo orientativo de 12 fuentes fiables. No rellenes una cuota ni cuentes copias del mismo origen como confirmaciones independientes. Reutiliza lo ya consultado.
 3. Estructura del dossier (en Markdown):
    - \`# Dossier: <título del documento>\`
-   - \`## Enfoque\`: qué deben aprender los destinatarios y cómo enfocarlo.
+   - \`## Enfoque\`: qué deben aprender los destinatarios, cómo enfocarlo y límites de la búsqueda (material consultado y aspectos sin verificar).
    - \`## Conceptos clave\`: definiciones precisas.
    - \`## Contenidos\`: organizados por bloques temáticos, con ideas, datos y ejemplos, citando la fuente con [n].
    - \`## Dificultades y errores frecuentes\` del alumnado.
@@ -114,14 +114,14 @@ ${JSON.stringify(
     if (soloApartados && !actual?.entradas.length) throw new ErrorUsuario('Primero hace falta un índice con secciones');
     const guia = await this.guiaImportacion(asig, doc);
     // Con el currículo oficial, el índice se planifica para cubrir los criterios que tocan a este tema
-    const curriculo = await this.almacen.leerCurriculo(asig);
+    const curriculo = await this.curriculumReference(asig, doc);
     const conCurriculo = curriculo.trim()
       ? `
 
-## Currículo oficial de la asignatura (curriculo.md)
+## Currículo estructurado activo de la asignatura
 Planifica el índice para que cubra los resultados de aprendizaje, criterios de evaluación o saberes básicos que correspondan a ESTE documento (según su título y su objetivo; no todo el currículo). En el «objetivo» de cada sección indica entre paréntesis los códigos que trabaja (p. ej. «(RA2: a, b)» o «(CE 3.1, 3.2)»).
 
-${curriculo.slice(0, 30_000)}`
+${curriculo}`
       : '';
     const ejemploApartados =
       profundidad === 1

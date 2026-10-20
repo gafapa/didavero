@@ -1,0 +1,25 @@
+{
+  "origin": "https://didavero.com",
+  "owner": {
+    "name": "Pablo Gallego Falcón",
+    "taxId": "35320739F",
+    "address": "Conchidos 8, 36152 Pontevedra, Spain",
+    "email": "pablo@didavero.com",
+    "country": "Spain"
+  },
+  "hosting": {
+    "provider": "Oracle Cloud Infrastructure",
+    "region": "eu-frankfurt-1",
+    "country": "Germany",
+    "technicalLogRetention": "30 daily rotations; current log until next rotation"
+  },
+  "version": "0.7.0-beta.1",
+  "updated": "2026-10-20",
+  "repository": "https://github.com/gafapa/didavero",
+  "previewDownload": {
+    "path": "/downloads/Didavero-0.7.0-beta.1-portable.exe",
+    "artifact": "release/didavero-preview-build/Didavero-portable.exe",
+    "size": 211435256,
+    "sha256": "b9067d37826209f7523572155df6aef5dc111950de013743a4e2c93e19998351"
+  }
+}

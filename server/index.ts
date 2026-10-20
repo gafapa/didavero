@@ -1,3 +1,4 @@
+import { ENGINE_IDS, isEngine } from '../shared/engines';
 // Servidor local: API REST, WebSocket de eventos y archivos estáticos de la interfaz.
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import fastifyStatic from '@fastify/static';
@@ -12,8 +13,14 @@ import type { Ajustes, EstadoMotor, HerramientasChat, PerfilGasto, SeleccionText
 import { Almacen, ErrorUsuario } from './store';
 import { Cola } from './agents/cola';
 import { readCodexUsage } from './agents/codexUsage';
+import { acquireInstanceLock } from './instanceLock';
 import { APPLICATION_CSP, isLocalRequestAllowed } from './localSecurity';
 import { saveUpload } from './uploads';
+import type { CurriculumProfile } from '../shared/curriculum';
+import { suggestedCurriculumProfile } from './curriculumExtraction';
+import { exportProgramme, PROGRAMME_EXPORT_MIMES } from './exportProgramme';
+import { parseProgramme, parseProgrammePurpose } from './teachingProgrammeStore';
+import type { CreateProgrammeRequest, ProgrammeExportFormat } from '../shared/teachingProgramme';
 import { AGENTES } from './agents/agentes';
 import { abrirArchivo, abrirCarpeta, abrirTerminal, comandoInstalacion, comandoSesion, comprobarMotor } from './agents/motores';
 import { cargarAjustes, guardarAjustes } from './ajustes';
@@ -22,7 +29,7 @@ import { Historial } from './historial';
 import type { OpcionesActividad } from '../shared/actividades';
 import { exportar } from './exportar';
 import { exportarExamen, exportarExamenMoodle, listarExportadosExamen, rutaExportadoExamen, type FormatoExamen } from './exportarExamen';
-import type { OpcionesExamen, PreguntaExamen } from '../shared/examenes';
+import type { OpcionesExamen, PreguntaExamen, ExamAdaptationRequest } from '../shared/examenes';
 import { Contador } from './tokens';
 import { plantillaBase } from './plantillaBase';
 import { borrarDePapelera, crearCopia, duplicarAsignatura, duplicarDocumento, listarPapelera, reunirExportados, restaurarCopia, restaurarDePapelera } from './gestion';
@@ -56,7 +63,8 @@ export async function crearServidor(op: OpcionesServidor) {
   await almacen.iniciar();
   // Los trabajos se guardan junto a los ajustes, para sobrevivir a reinicios del servidor
   const dirTrabajos = op.dirTrabajos ?? path.join(path.dirname(op.archivoAjustes), 'trabajos');
-  bloquear(dirTrabajos);
+  const releaseInstance = await acquireInstanceLock(dirTrabajos);
+  try {
   const cola = new Cola(ajustes.maxSimultaneos, dirTrabajos);
   const contador = new Contador(path.join(path.dirname(op.archivoAjustes), 'tokens.json'));
   const dirBin = op.dirBin ?? '';
@@ -65,7 +73,7 @@ export async function crearServidor(op: OpcionesServidor) {
   let motores: EstadoMotor[] = [];
   let engineCheck: Promise<EstadoMotor[]> | undefined;
   const refrescarMotores = () => {
-    engineCheck ??= Promise.all([comprobarMotor('claude'), comprobarMotor('codex')])
+    engineCheck ??= Promise.all(ENGINE_IDS.map(comprobarMotor))
       .then(result => (motores = result))
       .finally(() => { engineCheck = undefined; });
     return engineCheck;
@@ -93,7 +101,7 @@ export async function crearServidor(op: OpcionesServidor) {
   contador.sembrar(cola.listar());
   cola.on('terminado', (t: Trabajo) => contador.llamada(t.agente));
 
-  const app = Fastify({ logger: false, bodyLimit: 80 * 1024 * 1024 });
+  const app = Fastify({ logger: false, bodyLimit: 80 * 1024 * 1024, routerOptions: { maxParamLength: 512 } });
   await app.register(fastifyWebsocket);
   await app.register(fastifyMultipart, { limits: { fileSize: 200 * 1024 * 1024 } });
 
@@ -118,7 +126,7 @@ export async function crearServidor(op: OpcionesServidor) {
     const status = err instanceof ErrorUsuario ? err.status : err.statusCode ?? 500;
     if (status >= 500) console.error(err);
     const msg = err.message || 'Error inesperado';
-    rep.code(status).send({ error: err instanceof ErrorUsuario ? msg : status === 404 ? 'No encontrado' : msg });
+    rep.code(status).send({ error: status >= 500 ? 'Error interno del servidor' : err instanceof ErrorUsuario ? msg : status === 404 ? 'No encontrado' : msg });
   });
 
   // ---------- WebSocket ----------
@@ -175,30 +183,30 @@ export async function crearServidor(op: OpcionesServidor) {
     const b = req.body as Partial<Ajustes>;
     const nuevo: Ajustes = { ...ajustes };
     if (typeof b.maxSimultaneos === 'number') nuevo.maxSimultaneos = Math.min(8, Math.max(1, Math.round(b.maxSimultaneos)));
-    if (b.motorPorDefecto === 'claude' || b.motorPorDefecto === 'codex') nuevo.motorPorDefecto = b.motorPorDefecto;
+    if (isEngine(b.motorPorDefecto)) nuevo.motorPorDefecto = b.motorPorDefecto;
     if (typeof b.asistenteCompletado === 'boolean') nuevo.asistenteCompletado = b.asistenteCompletado;
     if (typeof b.ocultarRequisitos === 'boolean') nuevo.ocultarRequisitos = b.ocultarRequisitos;
     if (b.agentes && typeof b.agentes === 'object') {
       nuevo.agentes = {};
       for (const [id, c] of Object.entries(b.agentes)) {
         if (!Object.hasOwn(AGENTES, id) || !c) continue;
-        const motor = c.motor === 'claude' || c.motor === 'codex' ? c.motor : undefined;
+        const motor = isEngine(c.motor) ? c.motor : undefined;
         const instrucciones = typeof c.instrucciones === 'string' && c.instrucciones.trim() ? c.instrucciones : undefined;
         const esfuerzo = c.esfuerzo === 'low' || c.esfuerzo === 'medium' || c.esfuerzo === 'high' ? c.esfuerzo : undefined;
-        const modelo = typeof c.modelo === 'string' && /^[\w.-]{1,60}$/.test(c.modelo.trim()) ? c.modelo.trim() : undefined;
+        const modelo = typeof c.modelo === 'string' && /^[\w./:#-]{1,300}$/.test(c.modelo.trim()) ? c.modelo.trim() : undefined;
         if (motor || instrucciones || esfuerzo || modelo) nuevo.agentes[id] = { motor, instrucciones, esfuerzo, modelo };
       }
     }
-    if (b.modoMotor === 'claude' || b.modoMotor === 'codex' || b.modoMotor === 'ambos') nuevo.modoMotor = b.modoMotor;
+    if (isEngine(b.modoMotor) || b.modoMotor === 'ambos') nuevo.modoMotor = b.modoMotor;
     if (typeof b.perfil === 'string' && Object.hasOwn(PERFILES, b.perfil)) nuevo.perfil = b.perfil;
     if (b.modelos && typeof b.modelos === 'object') {
       const modelos: NonNullable<Ajustes['modelos']> = {};
-      for (const m of ['claude', 'codex'] as const) {
+      for (const m of ENGINE_IDS) {
         const tabla = b.modelos[m];
         if (!tabla || typeof tabla !== 'object') continue;
         modelos[m] = {};
         for (const [agente, c] of Object.entries(tabla)) {
-          if (!Object.hasOwn(AGENTES, agente) || !c || typeof c.modelo !== 'string' || !/^[\w.:-]{1,80}$/.test(c.modelo)) continue;
+          if (!Object.hasOwn(AGENTES, agente) || !c || typeof c.modelo !== 'string' || !/^[\w./:#-]{0,300}$/.test(c.modelo)) continue;
           modelos[m]![agente] = { modelo: c.modelo, esfuerzo: c.esfuerzo && ESFUERZOS.includes(c.esfuerzo) ? c.esfuerzo : undefined };
         }
       }
@@ -232,7 +240,7 @@ export async function crearServidor(op: OpcionesServidor) {
   });
   app.post('/api/motores/:motor/:accion', async (req) => {
     const { motor, accion } = req.params as { motor: Motor; accion: string };
-    if (motor !== 'claude' && motor !== 'codex') throw new ErrorUsuario('Motor desconocido');
+    if (!isEngine(motor)) throw new ErrorUsuario('Motor desconocido');
     if (accion === 'instalar') abrirTerminal(comandoInstalacion(motor));
     else if (accion === 'sesion') abrirTerminal(comandoSesion(motor));
     else throw new ErrorUsuario('Acción desconocida');
@@ -240,6 +248,7 @@ export async function crearServidor(op: OpcionesServidor) {
   });
   app.get('/api/motores/:motor/comandos', async (req) => {
     const { motor } = req.params as { motor: Motor };
+    if (!isEngine(motor)) throw new ErrorUsuario('Motor desconocido');
     return { instalar: comandoInstalacion(motor), sesion: comandoSesion(motor) };
   });
 
@@ -355,7 +364,9 @@ export async function crearServidor(op: OpcionesServidor) {
   });
   app.put('/api/asignaturas/:a/documentos/:d/secciones/:s', async (req) => {
     const { a, d, s } = req.params as PS;
-    await almacen.guardarSeccion(a, d, s, String((req.body as { contenido: string }).contenido ?? ''));
+    const body = req.body as { contenido?: unknown } | null;
+    if (!body || typeof body.contenido !== 'string') throw new ErrorUsuario('El contenido de la sección debe ser un texto.');
+    await almacen.guardarSeccion(a, d, s, body.contenido);
     return { ok: true };
   });
   app.delete('/api/asignaturas/:a/documentos/:d/secciones/:s', async (req) => {
@@ -388,6 +399,14 @@ export async function crearServidor(op: OpcionesServidor) {
       flujo.prepararFuentes(a, d).catch(() => {});
       return { ok: true };
     });
+    app.put(`${base}/:nombre`, async (req) => {
+      const { a, d, nombre } = req.params as Partial<PD> & PA & { nombre: string };
+      const body = req.body as { name?: unknown; expectedModified?: unknown } | null;
+      if (typeof body?.name !== 'string' || typeof body?.expectedModified !== 'string') throw new ErrorUsuario('Indica el nombre y la versión de la fuente.');
+      const source = await almacen.renameSource(a, nombre, body.name, body.expectedModified, d);
+      await flujo.prepararFuentes(a, d);
+      return source;
+    });
   }
 
   // ---------- Agentes ----------
@@ -405,14 +424,14 @@ export async function crearServidor(op: OpcionesServidor) {
     };
   });
   app.get('/api/modelos', async () => ({
-    ...modelosDisponibles(),
-    predeterminados: { claude: preset('claude', ajustes.perfil), codex: preset('codex', ajustes.perfil) },
+    ...await modelosDisponibles(),
+    predeterminados: { claude: preset('claude', ajustes.perfil), codex: preset('codex', ajustes.perfil), opencode: preset('opencode', ajustes.perfil) },
   }));
   // Un perfil de gasto rellena modelo y esfuerzo de todos los agentes en los dos motores
   app.post('/api/ajustes/perfil/:perfil', async (req) => {
     const perfil = (req.params as { perfil: string }).perfil as PerfilGasto;
     if (!(perfil in PERFILES)) throw new ErrorUsuario('Perfil no válido');
-    ajustes = { ...ajustes, perfil, modelos: { claude: preset('claude', perfil), codex: preset('codex', perfil) } };
+    ajustes = { ...ajustes, perfil, modelos: { claude: preset('claude', perfil), codex: preset('codex', perfil), opencode: ajustes.modelos?.opencode ?? preset('opencode', perfil) } };
     await guardarAjustes(op.archivoAjustes, ajustes);
     return ajustes;
   });
@@ -700,6 +719,7 @@ export async function crearServidor(op: OpcionesServidor) {
   app.put(E, async (req) => flujo.editarExamen(pe(req).a, pe(req).id, (req.body ?? {}) as { titulo?: string; opciones?: Partial<OpcionesExamen> }));
   app.delete(E, async (req) => flujo.eliminarExamen(pe(req).a, pe(req).id));
   app.post(`${E}/generar`, async (req) => flujo.generarExamen(pe(req).a, pe(req).id, (req.body as { opciones?: Partial<OpcionesExamen> } | undefined)?.opciones));
+  app.post(`${E}/adaptations`, async (req) => flujo.adaptExam(pe(req).a, pe(req).id, req.body as ExamAdaptationRequest));
   app.post(`${E}/puntuacion`, async (req) => flujo.ajustarPuntuacion(pe(req).a, pe(req).id, (req.body as { total?: number } | undefined)?.total));
   app.post(`${E}/orden`, async (req) => flujo.ordenarPreguntasExamen(pe(req).a, pe(req).id, ((req.body as { ids?: string[] })?.ids ?? []).map(String)));
   // Preguntas: nueva (con IA), rehacer (con IA), editar y quitar
@@ -757,12 +777,103 @@ export async function crearServidor(op: OpcionesServidor) {
     return { ok: true };
   });
 
-  app.get('/api/asignaturas/:a/curriculo', async (req) => ({ contenido: await almacen.leerCurriculo((req.params as PA).a) }));
-  app.put('/api/asignaturas/:a/curriculo', async (req) => {
-    await almacen.guardarCurriculo((req.params as PA).a, String((req.body as { contenido?: string })?.contenido ?? ''));
-    return { ok: true };
+  app.post('/api/asignaturas/:a/curriculo/buscar', async (req) => {
+    const input = (req.body ?? {}) as { indicaciones?: string; profile?: CurriculumProfile };
+    return flujo.buscarCurriculo((req.params as PA).a, input.indicaciones, input);
   });
-  app.post('/api/asignaturas/:a/curriculo/buscar', async (req) => flujo.buscarCurriculo((req.params as PA).a, cuerpo(req).indicaciones));
+  // Structured drafts use optimistic revisions; activation keeps immutable version snapshots.
+  const curriculumRoute = '/api/asignaturas/:a/curriculo';
+  const programmesRoute = '/api/asignaturas/:a/programaciones';
+  const programmeRoute = `${programmesRoute}/:p`;
+  app.get(programmesRoute, async (req) => {
+    const subject = await almacen.obtenerAsignatura((req.params as PA).a);
+    return flujo.programmeProjects(subject.id).list();
+  });
+  app.post(programmesRoute, async (req) => {
+    const subject = await almacen.obtenerAsignatura((req.params as PA).a);
+    return flujo.programmeProjects(subject.id).create(req.body as CreateProgrammeRequest);
+  });
+  app.delete(programmeRoute, async (req) => flujo.deleteProgramme((req.params as PA).a, (req.params as { p: string }).p));
+  app.get(programmeRoute, async (req) => {
+    const subject = await almacen.obtenerAsignatura((req.params as PA).a);
+    const project = await flujo.programmeProjects(subject.id).get((req.params as { p: string }).p);
+    const store = await flujo.programmeStore(subject.id, project.id, parseProgrammePurpose((req.query as { purpose?: string }).purpose)), state = await store.read();
+    const curricula = await almacen.curriculum(subject.id).read();
+    const programme = state.draft ?? state.reviewed?.programme;
+    const purpose = parseProgrammePurpose((req.query as { purpose?: string }).purpose);
+    const context = await flujo.programmePlanningContext(subject.id, project.id, purpose);
+    const research = await (await flujo.programmeProjects(subject.id).research(project.id, purpose)).read();
+    const unitProposal = await (await flujo.programmeUnitHelpStore(subject.id, project.id, purpose)).read();
+    return { state, project, unitProposal: unitProposal ? { ...unitProposal, applied: state.appliedJobs.includes(`unit-proposal:${unitProposal.jobId}`) } : undefined, curriculum: await store.curriculum(programme?.curriculumVersionId ?? project.curriculumVersionId), activeVersionId: curricula.activeVersionId, research, researchContextFingerprint: context.fingerprint };
+  });
+  app.put(programmeRoute, async (req) => {
+    const subject = await almacen.obtenerAsignatura((req.params as PA).a);
+    const input = (req.body ?? {}) as { programme: unknown; expectedRevision: number; confirmed?: unknown };
+    return (await flujo.programmeStore(subject.id, (req.params as { p: string }).p, parseProgrammePurpose((req.query as { purpose?: string }).purpose))).save(input.programme, input.expectedRevision, { confirmed: input.confirmed });
+  });
+  app.post(`${programmeRoute}/generar`, async (req) => {
+    const input = (req.body ?? {}) as { expectedRevision: number; instructions?: string };
+    if (input.instructions !== undefined && (typeof input.instructions !== 'string' || input.instructions.length > 20000)) throw new ErrorUsuario('Indicaciones no válidas.');
+    return flujo.generateProgramme((req.params as PA).a, (req.params as { p: string }).p, input.expectedRevision, input.instructions, parseProgrammePurpose((req.query as { purpose?: string }).purpose));
+  });
+  app.post(`${programmeRoute}/ayuda-unidades`, async (req) => {
+    const input = (req.body ?? {}) as { expectedRevision: number; instructions?: string; unitId?: string };
+    if ((input.instructions !== undefined && (typeof input.instructions !== 'string' || input.instructions.length > 20000)) || (input.unitId !== undefined && (typeof input.unitId !== 'string' || input.unitId.length > 80))) throw new ErrorUsuario('Indicaciones de ayuda no válidas.');
+    return flujo.helpProgrammeUnits((req.params as PA).a, (req.params as { p: string }).p, input.expectedRevision, input.instructions, parseProgrammePurpose((req.query as { purpose?: string }).purpose), input.unitId);
+  });
+  app.post(`${programmeRoute}/ayuda-unidades/aplicar`, async (req) => {
+    const input = (req.body ?? {}) as { jobId: string; expectedRevision: number };
+    if (typeof input.jobId !== 'string' || input.jobId.length > 100) throw new ErrorUsuario('Propuesta no válida.');
+    return flujo.applyProgrammeUnits((req.params as PA).a, (req.params as { p: string }).p, parseProgrammePurpose((req.query as { purpose?: string }).purpose), input.jobId, input.expectedRevision);
+  });
+  app.post(`${programmeRoute}/investigar`, async (req) => {
+    return flujo.researchProgramme((req.params as PA).a, (req.params as { p: string }).p, parseProgrammePurpose((req.query as { purpose?: string }).purpose));
+  });
+  const downloadProgramme = async (req: FastifyRequest, reply: FastifyReply) => {
+    const subject = await almacen.obtenerAsignatura((req.params as PA).a), projectId = (req.params as { p: string }).p;
+    const query = req.query as { purpose?: string; reviewed?: string; format?: string }, purpose = parseProgrammePurpose(query.purpose);
+    const format = query.format ?? 'md';
+    if (!Object.hasOwn(PROGRAMME_EXPORT_MIMES, format)) throw new ErrorUsuario('Formato de exportación no válido.');
+    const store = await flujo.programmeStore(subject.id, projectId, purpose), state = await store.read();
+    const reviewed = query.reviewed === 'true', input = req.body as { programme?: unknown } | undefined;
+    let programme = reviewed ? state.reviewed?.programme : state.draft;
+    const project = await flujo.programmeProjects(subject.id).get(projectId), curriculum = await store.curriculum(project.curriculumVersionId);
+    if (!reviewed && req.method === 'POST') {
+      programme = parseProgramme(input?.programme, curriculum);
+      if (programme.purpose !== purpose) throw new ErrorUsuario('Esta programación pertenece a otra finalidad.');
+    }
+    if (!programme) throw new ErrorUsuario('No hay una programación guardada para exportar.');
+    const report = reviewed ? undefined : await (await flujo.programmeProjects(subject.id).research(projectId, purpose)).read();
+    const research = reviewed ? state.reviewed?.research : report?.revision === programme.researchRevision ? report?.result : undefined;
+    const exported = await exportProgramme(almacen, subject.id, programme, curriculum, format as ProgrammeExportFormat, { dirBin, reviewed, research });
+    return reply.header('Content-Disposition', `attachment; filename="${exported.filename}"`).type(exported.mime).send(exported.content);
+  };
+  app.get(`${programmeRoute}/exportar`, downloadProgramme);
+  app.post(`${programmeRoute}/exportar`, downloadProgramme);
+  app.get(curriculumRoute, async (req) => {
+    const subject = await almacen.obtenerAsignatura((req.params as PA).a);
+    const store = almacen.curriculum(subject.id);
+    return { state: await store.read(), suggestedProfile: suggestedCurriculumProfile(subject) };
+  });
+  app.put(curriculumRoute, async (req) => {
+    const subject = await almacen.obtenerAsignatura((req.params as PA).a);
+    const input = (req.body ?? {}) as { draft?: unknown; expectedRevision: number };
+    return almacen.curriculum(subject.id).saveDraft(input.draft, input.expectedRevision);
+  });
+  app.post(`${curriculumRoute}/activar`, async (req) => {
+    const subject = await almacen.obtenerAsignatura((req.params as PA).a);
+    const input = req.body as { expectedRevision: number; review?: { draft: unknown; confirmed: unknown } };
+    return almacen.curriculum(subject.id).activate(input?.expectedRevision, input?.review);
+  });
+  app.delete(curriculumRoute, async (req) => {
+    const subject = await almacen.obtenerAsignatura((req.params as PA).a);
+    return almacen.curriculum(subject.id).discardDraft((req.body as { expectedRevision: number })?.expectedRevision);
+  });
+  app.post(`${curriculumRoute}/restaurar`, async (req) => {
+    const subject = await almacen.obtenerAsignatura((req.params as PA).a);
+    const input = (req.body ?? {}) as { versionId: string; expectedRevision: number };
+    return almacen.curriculum(subject.id).restoreDraft(input.versionId, input.expectedRevision);
+  });
   app.post('/api/asignaturas/:a/glosario/actualizar', async (req) => flujo.glosario((req.params as PA).a, cuerpo(req).indicaciones));
   app.get('/api/asignaturas/:a/glosario', async (req) => ({ contenido: await almacen.leerGlosario((req.params as PA).a) }));
   app.put('/api/asignaturas/:a/glosario', async (req) => {
@@ -887,6 +998,7 @@ export async function crearServidor(op: OpcionesServidor) {
   app.addHook('onClose', async () => {
     clearInterval(usageTimer);
     usageController.abort();
+    await releaseInstance();
   });
   const direccion = await app.listen({ port: op.puerto ?? 0, host: op.host ?? '127.0.0.1' });
   usageTimer = setInterval(() => { void refreshCodexUsage(); }, 60000);
@@ -906,26 +1018,7 @@ export async function crearServidor(op: OpcionesServidor) {
       await app.close();
     },
   };
-}
-
-/**
- * Solo un servidor a la vez puede gestionar la cola de agentes (p. ej. la app instalada
- * y el modo «en vivo» comparten datos). Un servidor que se reinicia no choca consigo mismo
- * porque el proceso anterior ya ha terminado.
- */
-function bloquear(dir: string) {
-  fs.mkdirSync(dir, { recursive: true });
-  const candado = path.join(dir, 'servidor.pid');
-  try {
-    const pid = Number(fs.readFileSync(candado, 'utf8'));
-    if (pid && pid !== process.pid) {
-      process.kill(pid, 0); // lanza si el proceso ya no existe
-      throw new Error('Apuntes IA ya está abierta (la versión instalada o el modo en vivo). Ciérrala antes de abrir otra.');
-    }
-  } catch (e) {
-    if ((e as Error).message.startsWith('Apuntes IA')) throw e;
-  }
-  fs.writeFileSync(candado, String(process.pid));
+  } catch (error) { await releaseInstance(); throw error; }
 }
 
 function tipoMime(archivo: string): string {

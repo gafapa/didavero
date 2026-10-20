@@ -161,7 +161,7 @@ export function ImportNotesModal({ asignatura, onCerrar }: { asignatura?: string
       {(!documents.length || files.length > 0) && (
         <form onSubmit={importFiles} className="space-y-4">
           <fieldset disabled={!!progress} className="space-y-4">
-            <Campo etiqueta="Archivos" ayuda="Word, LibreOffice, Markdown, ZIP con imágenes o PDF. Cada archivo se convierte en un documento.">
+            <Campo etiqueta="Archivos" ayuda="Word, LibreOffice, Markdown, ZIP con imágenes o PDF. Cada archivo crea un conjunto de apuntes.">
               <div className="flex items-start gap-3 rounded-lg border border-dashed border-borde p-3">
                 <FileUp aria-hidden="true" className="mt-1 size-5 shrink-0 text-acento-texto" />
                 <input aria-label="Archivos de apuntes" type="file" multiple accept=".docx,.odt,.md,.markdown,.txt,.zip,.pdf" className="min-w-0 w-full text-sm file:mr-3 file:cursor-pointer file:rounded-md file:border-0 file:bg-panel-2 file:px-3 file:py-2 file:text-texto" onChange={event => setFiles(Array.from(event.target.files ?? []))} />

@@ -1,5 +1,5 @@
 appId: es.apuntesia.app
-productName: Apuntes IA
+productName: Didavero
 copyright: Copyright © 2026 Pablo Gallego
 
 directories:
@@ -12,6 +12,7 @@ files:
   - build/icon.png
   - build/icon.ico
   - package.json
+  - LICENSE
   - "!**/*.map"
 
 # Pandoc y Typst van fuera del asar para poder ejecutarlos
@@ -23,35 +24,36 @@ extraResources:
 asar: true
 
 win:
+  verifyUpdateCodeSignature: true
   # Instalador y versión portable (un .exe que no se instala; los datos van junto a él)
   target: [nsis, portable]
   icon: build/icon.ico
-  artifactName: Apuntes-IA-Setup.${ext}
+  artifactName: Didavero-Setup.${ext}
 
 portable:
-  artifactName: Apuntes-IA-portable.${ext}
+  artifactName: Didavero-portable.${ext}
 
 nsis:
   oneClick: true
   perMachine: false # se instala para el usuario actual, sin pedir permisos de administrador
   deleteAppDataOnUninstall: false # los apuntes están en Documentos y nunca se borran
-  shortcutName: Apuntes IA
+  shortcutName: Didavero
   createDesktopShortcut: always
 
 mac:
   target: dmg
   category: public.app-category.education
-  artifactName: Apuntes-IA-mac-${arch}.${ext}
+  artifactName: Didavero-mac-${arch}.${ext}
 
 linux:
   target: AppImage
   category: Education
-  artifactName: Apuntes-IA-linux.${ext}
+  artifactName: Didavero-linux.${ext}
 
 # Actualizaciones automáticas: las versiones se publican en GitHub Releases.
 
 publish:
   provider: github
   owner: gafapa
-  repo: apuntes-ia
+  repo: didavero
   releaseType: release

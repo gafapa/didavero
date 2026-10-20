@@ -1,3 +1,4 @@
+import { ENGINE_NAMES } from '../../../shared/engines';
 // Avisos del sistema (fuera de la app) cuando la ventana no está a la vista: una fase que termina,
 // un agente que falla o no da señales, o el límite de uso agotado. Los trabajos de una misma fase
 // (p. ej. los redactores de cada sección) se agrupan en un solo aviso al terminar el último.
@@ -5,6 +6,7 @@ import type { Motor, PasoFlujo, Trabajo, UsoSuscripcion } from '../../../shared/
 import type { AsignaturaResumen } from './api';
 
 const NOMBRE_PASO: Partial<Record<PasoFlujo, string>> = {
+  programacion: 'La programación',
   investigacion: 'La investigación',
   indice: 'El índice',
   redaccion: 'La redacción',
@@ -80,6 +82,6 @@ export function avisarUso(previo: UsoSuscripcion | undefined, uso: UsoSuscripcio
   for (const [m, hasta] of Object.entries(uso.pausas ?? {}) as [Motor, number][]) {
     if (!hasta || previo?.pausas?.[m]) continue;
     const hora = new Date(hasta).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' });
-    mostrar(`Límite de uso de ${m === 'claude' ? 'Claude' : 'Codex'} agotado`, `Los agentes esperan y seguirán solos a las ${hora}.`);
+    mostrar(`Límite de uso de ${ENGINE_NAMES[m]} agotado`, `Los agentes esperan y seguirán solos a las ${hora}.`);
   }
 }

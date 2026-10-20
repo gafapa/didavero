@@ -1,3 +1,4 @@
+import { ENGINE_NAMES } from '../../../../shared/engines';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Check, ExternalLink, Loader2, PenLine, SearchCheck, X } from 'lucide-react';
 import type { EstadoFlujo, Sugerencia, TipoRevision, Trabajo } from '../../../../shared/tipos';
@@ -124,7 +125,7 @@ export function PasoRedaccion({ a, d, estado, trabajos }: Props) {
                 </div>
                 {t && t.estado !== 'en-cola' && (
                   <div className="mt-0.5 truncate pl-[60px] text-[12.5px] text-texto-2">
-                    {t.motor === 'claude' ? 'Claude' : 'Codex'} · {ultimo?.texto ?? 'Trabajando…'}
+                    {ENGINE_NAMES[t.motor]} · {ultimo?.texto ?? 'Trabajando…'}
                   </div>
                 )}
               </div>

@@ -39,7 +39,7 @@ export function ModalDuplicarAsignatura({ asignatura, nombre, onCerrar }: { asig
       abierto={!!asignatura}
       onCerrar={onCerrar}
       titulo="Duplicar la asignatura"
-      descripcion="Se copian su contexto, fuentes, glosario, plantillas y todos sus documentos (sin el historial ni lo ya exportado). Útil para otro grupo o para el curso que viene."
+      descripcion="Se copian su contexto, fuentes, glosario, plantillas y todos sus apuntes (sin el historial ni lo ya exportado). Útil para otro grupo o para el curso que viene."
     >
       <form onSubmit={duplicar} className="space-y-4">
         <Campo etiqueta="Nombre de la copia">
@@ -91,7 +91,7 @@ export function ModalDuplicarDocumento({
     try {
       const d = await api.duplicarDocumento(asignatura, documento, { titulo: nuevo.trim() || undefined, destino });
       await cargarAsignaturas();
-      avisar(`Documento duplicado: «${d.titulo}»`, 'ok');
+      avisar(`Apuntes duplicados: «${d.titulo}»`, 'ok');
       seleccionar({ asignatura: destino, documento: d.id });
       onCerrar();
     } catch (err) {
@@ -105,7 +105,7 @@ export function ModalDuplicarDocumento({
     <Modal
       abierto={!!documento}
       onCerrar={onCerrar}
-      titulo="Duplicar el documento"
+      titulo="Duplicar los apuntes"
       descripcion="Se copian sus secciones, índice, imágenes, fuentes y actividades (sin el historial ni lo ya exportado)."
     >
       <form onSubmit={duplicar} className="space-y-4">
@@ -190,8 +190,8 @@ export function ModalPapelera({ abierto, onCerrar }: { abierto: boolean; onCerra
                   <div className="truncate text-[13.5px] font-medium">{e.titulo}</div>
                   <div className="text-[12px] text-texto-3">
                     {e.tipo === 'asignatura'
-                      ? 'Asignatura con sus documentos'
-                      : `${e.tipo === 'examen' ? 'Examen' : 'Documento'} de ${e.nombreAsignatura ?? 'una asignatura eliminada'}`}{' '}
+                      ? 'Asignatura con sus apuntes'
+                      : `${e.tipo === 'examen' ? 'Examen' : e.tipo === 'programacion' ? 'Programación' : 'Apuntes'} de ${e.nombreAsignatura ?? 'una asignatura eliminada'}`}{' '}
                     · eliminado el{' '}
                     {new Date(e.eliminado).toLocaleString('es', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
                   </div>
@@ -296,7 +296,7 @@ export function ModalExportarTodos({ asignatura, onCerrar }: { asignatura?: stri
     if (!hechos.length) return;
     try {
       await api.reunirExportados(a.id, hechos);
-      avisar(`${hechos.length} ${hechos.length === 1 ? 'documento exportado' : 'documentos exportados'}: se ha abierto la carpeta`, 'ok');
+      avisar(`${hechos.length} ${hechos.length === 1 ? 'conjunto de apuntes exportado' : 'conjuntos de apuntes exportados'}: se ha abierto la carpeta`, 'ok');
       onCerrar();
     } catch (err) {
       avisar((err as Error).message, 'error');
@@ -308,8 +308,8 @@ export function ModalExportarTodos({ asignatura, onCerrar }: { asignatura?: stri
       abierto={!!a}
       onCerrar={() => !progreso && onCerrar()}
       sinCerrar={!!progreso}
-      titulo="Exportar todos los documentos"
-      descripcion="Cada documento se exporta con las opciones que usaste la última vez (portada, índice, numeración…) y todos quedan juntos en una carpeta de la asignatura."
+      titulo="Exportar todos los apuntes"
+      descripcion="Cada conjunto de apuntes se exporta con las opciones que usaste la última vez (portada, índice, numeración…) y todos quedan juntos en una carpeta de la asignatura."
     >
       <div className="space-y-4">
         <Campo etiqueta="Formato">
@@ -328,7 +328,7 @@ export function ModalExportarTodos({ asignatura, onCerrar }: { asignatura?: stri
             ))}
           </div>
         </Campo>
-        <Campo etiqueta="Documentos">
+        <Campo etiqueta="Apuntes">
           <div className="max-h-64 space-y-1 overflow-y-auto rounded-lg border border-borde p-2">
             {a?.documentos.map((d) => (
               <label key={d.id} className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-[13px] hover:bg-panel-2">
@@ -354,7 +354,7 @@ export function ModalExportarTodos({ asignatura, onCerrar }: { asignatura?: stri
             Cancelar
           </Boton>
           <Boton variante="primario" icono={<FolderOpen className="size-4" />} cargando={!!progreso} disabled={!elegidos.size} onClick={exportar}>
-            Exportar {elegidos.size} {elegidos.size === 1 ? 'documento' : 'documentos'}
+            Exportar {elegidos.size} {elegidos.size === 1 ? 'conjunto de apuntes' : 'conjuntos de apuntes'}
           </Boton>
         </div>
       </div>

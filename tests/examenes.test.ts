@@ -65,6 +65,13 @@ test('prepara un examen con documentos y archivos propios, lo procesa y lo recup
   const ex = await flujo.crearExamen(asig.id, { titulo: 'Examen del tema 1' });
   assert.equal(ex.estado, 'borrador');
   assert.deepEqual(ex.opciones.documentos, [{ id: doc.id, secciones: [] }]);
+  assert.notEqual(ex.opciones.espacio, true);
+  await flujo.editarExamen(asig.id, ex.id, { opciones: { espacio: true } });
+  assert.equal((await flujo.examen(asig.id, ex.id)).opciones.espacio, true);
+  await flujo.editarExamen(asig.id, ex.id, { opciones: { duracion: 45 } });
+  assert.equal((await flujo.examen(asig.id, ex.id)).opciones.espacio, true);
+  await flujo.editarExamen(asig.id, ex.id, { opciones: { espacio: false } });
+  assert.equal((await flujo.examen(asig.id, ex.id)).opciones.espacio, false);
   // Archivos subidos solo para el examen: uno con texto y una imagen (la IA tendrá que abrirla)
   await fs.writeFile(await flujo.rutaFuenteExamen(asig.id, ex.id, 'apuntes-profesor.md'), `# Ribosomas\n\n${'Los ribosomas sintetizan proteínas a partir del ARN mensajero. '.repeat(6)}`);
   await fs.writeFile(await flujo.rutaFuenteExamen(asig.id, ex.id, 'pizarra.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
@@ -223,7 +230,7 @@ test('en papel: optatividad, modelo B, espacio para responder y hoja de respuest
   const des = (id: string): PreguntaExamen => ({ id, tipo: 'desarrollo', puntos: 2, enunciado: `Explica ${id}` });
 
   // Tres de desarrollo de las que se responden dos: el examen vale lo de dos
-  const ex = base([test('t1', 0), test('t2', 1), test('t3', 2), test('t4', 3), des('d1'), des('d2'), des('d3')], { elegir: { desarrollo: 2 } });
+  const ex = base([test('t1', 0), test('t2', 1), test('t3', 2), test('t4', 3), des('d1'), des('d2'), des('d3')], { elegir: { desarrollo: 2 }, espacio: true });
   assert.equal(totalExamen(ex), 4 + 4);
   const repartidas = repartirPuntos(ex);
   assert.equal(totalExamen({ ...ex, preguntas: repartidas }), 10);
@@ -240,6 +247,14 @@ test('en papel: optatividad, modelo B, espacio para responder y hoja de respuest
   const conHoja = { ...ex, preguntas: repartidas, opciones: { ...ex.opciones, hojaRespuestas: true } };
   assert.match(examenAMarkdown(conHoja, { formato: 'pdf', salto: '```{=typst}\n#pagebreak()\n```' }), /```\{=typst\}\n#block\(width: 100%\)\[#for _ in range\(15\)/);
   assert.match(examenAMarkdown(conHoja, { formato: 'docx' }), /w:between/);
+  for (const format of ['vista', 'pdf', 'docx', 'odt'] as const) {
+    const enabled = examenAMarkdown(conHoja, { formato: format });
+    for (const space of [false, undefined]) {
+      const disabled = examenAMarkdown({ ...conHoja, opciones: { ...conHoja.opciones, espacio: space } }, { formato: format });
+      assert.ok(disabled.length < enabled.length, `Answer space must be opt-in for ${format}`);
+      assert.doesNotMatch(disabled, /Espacio para responder|#for _ in range|w:pBdr/);
+    }
+  }
   const hoja = examenAMarkdown(conHoja);
   assert.match(hoja, /## Hoja de respuestas/);
   assert.match(hoja, /\| Pregunta \| a \| b \| c \| d \|/);
@@ -279,7 +294,7 @@ test('respuesta numérica, texto con huecos, completar tabla, esquema y redacci�
   assert.match(partesPregunta(tabla, 'tabla', 't').resto[0], /\| Protón \| \*\*\(1\)\*\*/);
 
   const ex = { id: 'z', titulo: 'X', estado: 'listo', creado: '', actualizado: '', preguntas: [num, banco, tabla, esquema, redaccion], opciones: { documentos: [], fuentesAsignatura: [], tipos: {}, dificultad: 'media', total: 7 } } as any;
-  const md = examenAMarkdown(ex);
+  const md = examenAMarkdown({ ...ex, opciones: { ...ex.opciones, espacio: true } });
   assert.match(md, /\*\*Resultado:\*\* .* mol\/L/);
   assert.match(md, /un recuadro de 14 líneas/); // esquema
   assert.match(md, /Espacio para responder: 20 líneas/); // redacción

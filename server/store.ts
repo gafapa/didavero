@@ -1,11 +1,15 @@
 // Almacenamiento en disco: una carpeta por asignatura y una subcarpeta por documento.
 import fs from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import type { Asignatura, AsignaturaDetalle, Documento, Exportado, Fuente, Permisos, Recurso, Seccion } from '../shared/tipos';
 import { PERMISOS } from '../shared/tipos';
 import type { Examen } from '../shared/examenes';
 import { writeFileAtomic } from './atomicFiles';
+import { CurriculumStore } from './curriculumStore';
+import { withStorageLock } from './storageLock';
+import { commitSectionOrder, recoverSectionOrder } from './sectionOrder';
 
 const COLORES = ['#7c5cff', '#0ea5e9', '#10b981', '#f59e0b', '#ef4444', '#ec4899', '#14b8a6', '#8b5cf6'];
 
@@ -27,7 +31,7 @@ export function slug(texto: string): string {
 }
 
 /** Valida que un nombre sea un único componente de ruta seguro. */
-function nombreSeguro(nombre: string): string {
+export function nombreSeguro(nombre: string): string {
   if (!nombre || nombre.startsWith('.') || /[\\/:*?"<>|]/.test(nombre) || nombre.length > 200) {
     throw new ErrorUsuario(`Nombre no válido: ${nombre}`);
   }
@@ -148,6 +152,7 @@ export class Almacen {
   }
 
   async actualizarAsignatura(id: string, datos: Partial<AsignaturaDetalle>): Promise<AsignaturaDetalle> {
+    return withStorageLock(path.join(this.dirAsignatura(id), 'asignatura.json'), async () => {
     const dir = this.dirAsignatura(id);
     const actual = await leerJson<Asignatura>(path.join(dir, 'asignatura.json'));
     const campos = ['nombre', 'nivel', 'destinatarios', 'idioma', 'estilo', 'color', 'etapa', 'curso', 'modalidad', 'familia', 'titulo', 'comunidad'] as const;
@@ -156,9 +161,10 @@ export class Almacen {
     if (datos.permisos && typeof datos.permisos === 'object') nuevo.permisos = limpiarPermisos(datos.permisos);
     await escribirJson(path.join(dir, 'asignatura.json'), nuevo);
     if (typeof datos.contexto === 'string') {
-      await fs.writeFile(path.join(dir, 'contexto.md'), datos.contexto, 'utf8');
+      await writeFileAtomic(path.join(dir, 'contexto.md'), datos.contexto);
     }
     return this.obtenerAsignatura(id);
+    });
   }
 
   /** No borra: mueve a la papelera dentro de la carpeta de datos. */
@@ -221,6 +227,7 @@ export class Almacen {
   }
 
   async actualizarDocumento(asig: string, id: string, datos: Partial<Documento>): Promise<Documento> {
+    return withStorageLock(path.join(this.dirDocumento(asig, id), 'documento.json'), async () => {
     const actual = await this.obtenerDocumento(asig, id);
     const campos = ['titulo', 'objetivo', 'destinatarios', 'extension'] as const;
     const nuevo: Documento = { ...actual, actualizado: ahora() };
@@ -231,6 +238,7 @@ export class Almacen {
     else if ('presupuesto' in datos) delete nuevo.presupuesto;
     await escribirJson(path.join(this.dirDocumento(asig, id), 'documento.json'), nuevo);
     return nuevo;
+    });
   }
 
   async eliminarDocumento(asig: string, id: string) {
@@ -244,9 +252,17 @@ export class Almacen {
   }
 
   async listarSecciones(asig: string, doc: string): Promise<Seccion[]> {
+    return withStorageLock(this.dirSecciones(asig, doc), async () => {
+      await fs.mkdir(this.dirSecciones(asig, doc), { recursive: true });
+      await recoverSectionOrder(this.dirSecciones(asig, doc));
+      return this.listSectionsUnlocked(asig, doc);
+    });
+  }
+
+  private async listSectionsUnlocked(asig: string, doc: string): Promise<Seccion[]> {
     const dir = this.dirSecciones(asig, doc);
     await fs.mkdir(dir, { recursive: true });
-    const archivos = (await fs.readdir(dir)).filter((f) => f.endsWith('.md')).sort();
+    const archivos = (await fs.readdir(dir)).filter((f) => !f.startsWith('.') && f.endsWith('.md')).sort();
     const summaries = new Array<Seccion>(archivos.length);
     let next = 0;
     // Bound disk concurrency and keep the original sorted order.
@@ -269,7 +285,7 @@ export class Almacen {
     if (stamp && cached?.stamp === stamp) return { ...cached.summary };
     const text = await leerTexto(filename);
     const heading = text.match(/^#{1,3}\s+(.+)$/m);
-    const summary = { archivo: name, titulo: heading ? heading[1].trim() : name.replace(/^\d+-/, '').replace(/\.md$/, '').replace(/-/g, ' '), palabras: text.split(/\s+/).filter(Boolean).length };
+    const summary = { archivo: name, revision: stamp, titulo: heading ? heading[1].trim() : name.replace(/^\d+-/, '').replace(/\.md$/, '').replace(/-/g, ' '), palabras: text.split(/\s+/).filter(Boolean).length };
     this.sectionSummaries.delete(filename);
     if (stamp) this.sectionSummaries.set(filename, { stamp, summary });
     if (this.sectionSummaries.size > 1024) this.sectionSummaries.delete(this.sectionSummaries.keys().next().value!);
@@ -277,49 +293,55 @@ export class Almacen {
   }
 
   async leerSeccion(asig: string, doc: string, archivo: string): Promise<string> {
-    return fs.readFile(path.join(this.dirSecciones(asig, doc), nombreSeguro(archivo)), 'utf8');
+    return withStorageLock(this.dirSecciones(asig, doc), async () => {
+      nombreSeguro(archivo);
+      await recoverSectionOrder(this.dirSecciones(asig, doc));
+      return fs.readFile(path.join(this.dirSecciones(asig, doc), archivo), 'utf8');
+    });
   }
 
   async guardarSeccion(asig: string, doc: string, archivo: string, contenido: string) {
+    return withStorageLock(this.dirSecciones(asig, doc), async () => {
+    await recoverSectionOrder(this.dirSecciones(asig, doc));
     const filename = path.join(this.dirSecciones(asig, doc), nombreSeguro(archivo));
     await writeFileAtomic(filename, contenido);
     this.sectionSummaries.delete(filename);
+    });
   }
 
   async crearSeccion(asig: string, doc: string, titulo: string): Promise<Seccion> {
+    return withStorageLock(this.dirSecciones(asig, doc), async () => {
+    await recoverSectionOrder(this.dirSecciones(asig, doc));
     const t = titulo.trim() || 'Nueva sección';
-    const existentes = await this.listarSecciones(asig, doc);
-    const num = String(existentes.length + 1).padStart(2, '0');
+    const existentes = await this.listSectionsUnlocked(asig, doc);
+    const num = String(Math.max(0, ...existentes.map(section => Number(section.archivo.match(/^\d+/)?.[0]) || 0)) + 1).padStart(2, '0');
     const archivo = `${num}-${slug(t)}.md`;
-    await this.guardarSeccion(asig, doc, archivo, `# ${t}\n\n`);
+    await writeFileAtomic(path.join(this.dirSecciones(asig, doc), archivo), `# ${t}\n\n`);
     return { archivo, titulo: t, palabras: 0 };
+    });
   }
 
   async eliminarSeccion(asig: string, doc: string, archivo: string) {
+    return withStorageLock(this.dirSecciones(asig, doc), async () => {
+    await recoverSectionOrder(this.dirSecciones(asig, doc));
     const dir = this.dirSecciones(asig, doc);
     await fs.rm(path.join(dir, nombreSeguro(archivo)));
-    await this.renumerar(asig, doc, (await this.listarSecciones(asig, doc)).map((s) => s.archivo));
+    await commitSectionOrder(dir, (await this.listSectionsUnlocked(asig, doc)).map((s) => s.archivo));
+    });
   }
 
   /** Renombra las secciones con prefijo numérico según el orden indicado. */
   async renumerar(asig: string, doc: string, orden: string[]): Promise<Seccion[]> {
+    return withStorageLock(this.dirSecciones(asig, doc), async () => {
     const dir = this.dirSecciones(asig, doc);
-    const actuales = new Set((await fs.readdir(dir)).filter((f) => f.endsWith('.md')));
-    if (orden.length !== actuales.size || orden.some((a) => !actuales.has(nombreSeguro(a)))) {
+    await recoverSectionOrder(dir);
+    const actuales = new Set((await fs.readdir(dir)).filter((f) => !f.startsWith('.') && f.endsWith('.md')));
+    if (new Set(orden).size !== orden.length || orden.length !== actuales.size || orden.some((a) => !actuales.has(nombreSeguro(a)))) {
       throw new ErrorUsuario('El orden no coincide con las secciones existentes');
     }
-    // Dos pasos para evitar colisiones de nombres
-    const temporales = await Promise.all(
-      orden.map(async (a, i) => {
-        const tmp = `.tmp-${i}-${a}`;
-        await fs.rename(path.join(dir, a), path.join(dir, tmp));
-        return { tmp, base: a.replace(/^\d+-/, ''), i };
-      }),
-    );
-    for (const { tmp, base, i } of temporales) {
-      await fs.rename(path.join(dir, tmp), path.join(dir, `${String(i + 1).padStart(2, '0')}-${base}`));
-    }
-    return this.listarSecciones(asig, doc);
+    await commitSectionOrder(dir, orden);
+    return this.listSectionsUnlocked(asig, doc);
+    });
   }
 
   // ---------- Fuentes (material aportado) ----------
@@ -351,7 +373,36 @@ export class Almacen {
   }
 
   async eliminarFuente(asig: string, nombre: string, doc?: string) {
-    await fs.rm(path.join(this.dirFuentes(asig, doc), nombreSeguro(nombre)));
+    const directory = this.dirFuentes(asig, doc);
+    await withStorageLock(directory, () => fs.rm(path.join(directory, nombreSeguro(nombre))));
+  }
+
+  async renameSource(subjectId: string, filename: string, newName: string, expectedModified: string, documentId?: string): Promise<Fuente> {
+    const directory = this.dirFuentes(subjectId, documentId);
+    nombreSeguro(filename);
+    nombreSeguro(newName);
+    if (newName !== newName.trim() || /[. ]$/.test(newName) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i.test(newName)) throw new ErrorUsuario('El nombre del archivo no es válido.');
+    if (path.extname(filename).toLowerCase() !== path.extname(newName).toLowerCase()) throw new ErrorUsuario('Conserva la extensión del archivo.');
+    return withStorageLock(directory, async () => {
+      const original = path.join(directory, filename), target = path.join(directory, newName);
+      const stat = await fs.lstat(original).catch(error => {
+        if (error.code === 'ENOENT') throw new ErrorUsuario('La fuente ya no existe. Recarga la lista.', 404);
+        throw error;
+      });
+      if (!stat.isFile()) throw new ErrorUsuario('La fuente no es un archivo válido.');
+      if (stat.mtime.toISOString() !== expectedModified) throw new ErrorUsuario('La fuente ha cambiado. Recarga sus datos antes de editarla.', 409);
+      if (filename !== newName) {
+        try { await fs.copyFile(original, target, constants.COPYFILE_EXCL); }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new ErrorUsuario('Ya existe una fuente con ese nombre.', 409);
+          throw error;
+        }
+        // Keep the original if copying fails; never replace another source.
+        await fs.unlink(original);
+      }
+      const updated = await fs.stat(target);
+      return { nombre: newName, tamano: updated.size, modificado: updated.mtime.toISOString() };
+    });
   }
 
   // ---------- Archivos auxiliares del documento ----------
@@ -488,13 +539,13 @@ export class Almacen {
     await fs.writeFile(path.join(this.dirAsignatura(asig), 'glosario.md'), texto, 'utf8');
   }
 
-  /** Currículo oficial de la asignatura (curriculo.md), transcrito de la norma. */
-  async leerCurriculo(asig: string) {
-    return leerTexto(path.join(this.dirAsignatura(asig), 'curriculo.md'));
+  curriculum(asig: string) {
+    return new CurriculumStore(this.dirAsignatura(asig));
   }
 
-  async guardarCurriculo(asig: string, texto: string) {
-    await fs.writeFile(path.join(this.dirAsignatura(asig), 'curriculo.md'), texto, 'utf8');
+  /** Material-generation agents receive only the activated structured curriculum. */
+  async curriculumPrompt(asig: string) {
+    return this.curriculum(asig).promptText();
   }
 
   /** Plantilla de Word/LibreOffice propia de la asignatura (plantilla.docx / plantilla.odt). */

@@ -112,6 +112,7 @@ export function Modal({
   children,
   ancho = 'max-w-lg',
   sinCerrar,
+  footer,
 }: {
   abierto: boolean;
   onCerrar: () => void;
@@ -120,6 +121,7 @@ export function Modal({
   children: ReactNode;
   ancho?: string;
   sinCerrar?: boolean;
+  footer?: ReactNode;
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const titleId = useId();
@@ -168,6 +170,7 @@ export function Modal({
           )}
         </div>
         <div className="min-h-0 overflow-y-auto px-6 pt-4 pb-6">{children}</div>
+        {footer && <div className="shrink-0 border-t border-borde px-6 py-4">{footer}</div>}
       </div>
     </div>
   );

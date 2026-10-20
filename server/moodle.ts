@@ -84,7 +84,7 @@ function pregunta(tipo: TipoActividad, p: PreguntaActividad, n: number): string 
 
 export function generarGift(bloques: BloqueActividad[], titulo: string): string {
   const raiz = titulo.replace(/[/\n]/g, ' ');
-  const lineas: string[] = [`// Autoevaluación: ${titulo}`, '// Generado por Apuntes IA', ''];
+  const lineas: string[] = [`// Autoevaluación: ${titulo}`, '// Generado por Didavero', ''];
   let n = 0;
   for (const b of bloques) {
     lineas.push(`$CATEGORY: $course$/top/${raiz}/${b.titulo.replace(/[/\n]/g, ' ')}`, '');
