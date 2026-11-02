@@ -1,5 +1,5 @@
 // Render the full and small SVG marks using Electron's canvas implementation.
-// Run npm run iconos to refresh the desktop, website and documentation assets.
+// Run npm run iconos to refresh the desktop and application favicon assets.
 import { app, BrowserWindow } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -36,7 +36,6 @@ app.whenReady().then(async () => {
   };
   escribir('build/icon.png', await png(1024));
   escribir('web/public/icono.png', await png(128));
-  escribir('docs/icono.png', await png(256));
 
   // .ico con las imágenes en PNG (Windows Vista y posteriores)
   const lados = [16, 20, 24, 32, 40, 48, 64, 128, 256];

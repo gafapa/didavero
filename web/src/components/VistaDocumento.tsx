@@ -20,6 +20,7 @@ import {
 import type { Documento, Permisos, Seccion } from '../../../shared/tipos';
 import { permisosEfectivos } from '../../../shared/tipos';
 import { loadSectionContents, type SectionContentCache } from '../lib/sectionContents';
+import { documentSaveTasks, registerPendingEdits } from '../lib/pendingEdits';
 import { EditorPermisos } from './EditorPermisos';
 import { BotonAgente } from './flujo/comun';
 import { api, urlDatos } from '../lib/api';
@@ -150,6 +151,7 @@ const Apuntes = memo(function Apuntes({ asignatura, documento }: { asignatura: s
   const [secciones, setSecciones] = useState<Seccion[]>([]);
   const [activa, setActiva] = useState<string>();
   const [texto, setTexto] = useState('');
+  const [sectionLoading, setSectionLoading] = useState(false);
   const [estadoGuardado, setEstadoGuardado] = useState<'guardado' | 'pendiente' | 'guardando'>('guardado');
   const [conflicto, setConflicto] = useState<string>();
   const [verHistorial, setVerHistorial] = useState(false);
@@ -160,6 +162,9 @@ const Apuntes = memo(function Apuntes({ asignatura, documento }: { asignatura: s
   const textoRef = useRef(texto);
   textoRef.current = texto;
   const temporizador = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const sectionSaves = useRef(documentSaveTasks(`${asignatura}/${documento}`));
+  const activeFileRef = useRef(activa);
+  activeFileRef.current = activa;
   const base = urlDatos(asignatura, 'documentos', documento);
 
   const cargarSecciones = useCallback(async () => {
@@ -180,7 +185,7 @@ const Apuntes = memo(function Apuntes({ asignatura, documento }: { asignatura: s
   useEffect(() => {
     if (!irASeccion) return;
     useEstado.setState({ irASeccion: undefined });
-    cargarSecciones().then(() => setActiva(irASeccion));
+    cargarSecciones().then(() => { void abrir(irASeccion); });
   }, [irASeccion, cargarSecciones]);
 
   useEffect(() => {
@@ -192,14 +197,20 @@ const Apuntes = memo(function Apuntes({ asignatura, documento }: { asignatura: s
   useEffect(() => {
     setConflicto(undefined);
     if (!activa || activa === TODO) return;
+    let current = true;
+    setSectionLoading(true);
     api
       .leerSeccion(asignatura, documento, activa)
       .then(({ contenido }) => {
+        if (!current) return;
         guardadoRef.current = contenido;
+        textoRef.current = contenido;
         setTexto(contenido);
         setEstadoGuardado('guardado');
       })
-      .catch(() => setActiva(TODO));
+      .catch(() => { if (current) setActiva(TODO); })
+      .finally(() => { if (current) setSectionLoading(false); });
+    return () => { current = false; };
   }, [asignatura, documento, activa]);
 
   // Documento completo
@@ -238,31 +249,34 @@ const Apuntes = memo(function Apuntes({ asignatura, documento }: { asignatura: s
   }, [version]);
 
   const guardar = useCallback(
-    async (contenido: string, archivo: string) => {
-      setEstadoGuardado('guardando');
+    (contenido: string, archivo: string) => sectionSaves.current.run(async () => {
+      if (activeFileRef.current === archivo) setEstadoGuardado('guardando');
       // Reintentos: el servidor puede estar reiniciándose (p. ej. en el modo «app en vivo»)
       for (let intento = 0; ; intento++) {
         try {
           await api.guardarSeccion(asignatura, documento, archivo, contenido);
-          guardadoRef.current = contenido;
-          setEstadoGuardado('guardado');
-          return;
+          if (activeFileRef.current === archivo) {
+            guardadoRef.current = contenido;
+            setEstadoGuardado(textoRef.current === contenido ? 'guardado' : 'pendiente');
+          }
+          return true;
         } catch (e) {
           const status = (e as { status?: number }).status;
           if (intento < 10 && (status === undefined || status >= 500)) {
             await new Promise((r) => setTimeout(r, 1000));
             continue;
           }
-          setEstadoGuardado('pendiente');
+          if (activeFileRef.current === archivo) setEstadoGuardado('pendiente');
           avisar(`No se pudo guardar: ${(e as Error).message}`, 'error');
-          return;
+          return false;
         }
       }
-    },
+    }),
     [asignatura, documento, avisar],
   );
 
   const alCambiar = (v: string) => {
+    textoRef.current = v;
     setTexto(v);
     setEstadoGuardado('pendiente');
     clearTimeout(temporizador.current);
@@ -273,8 +287,16 @@ const Apuntes = memo(function Apuntes({ asignatura, documento }: { asignatura: s
   /** Guarda de inmediato lo pendiente (antes de cambiar de sección o renumerar archivos). */
   const vaciarPendiente = async () => {
     clearTimeout(temporizador.current);
-    if (activa && activa !== TODO && texto !== guardadoRef.current) await guardar(texto, activa);
+    if (activa && activa !== TODO && textoRef.current !== guardadoRef.current) {
+      const snapshot = textoRef.current;
+      return await guardar(snapshot, activa) && textoRef.current === snapshot;
+    }
+    await sectionSaves.current.flush();
+    return !activa || activa === TODO || textoRef.current === guardadoRef.current;
   };
+  const flushRef = useRef(vaciarPendiente);
+  flushRef.current = vaciarPendiente;
+  useEffect(() => registerPendingEdits(`${asignatura}/${documento}`, () => flushRef.current()), [asignatura, documento]);
 
   /** Tras renumerar, el archivo activo puede haber cambiado de prefijo: se busca por su nombre base. */
   const reubicar = (lista: Seccion[]) => {
@@ -285,7 +307,7 @@ const Apuntes = memo(function Apuntes({ asignatura, documento }: { asignatura: s
 
   const abrir = async (archivo: string) => {
     if (archivo === activa) return;
-    await vaciarPendiente();
+    if (!await vaciarPendiente()) return;
     setActiva(archivo);
   };
 
@@ -300,7 +322,7 @@ const Apuntes = memo(function Apuntes({ asignatura, documento }: { asignatura: s
     const j = i + delta;
     if (j < 0 || j >= orden.length) return;
     [orden[i], orden[j]] = [orden[j], orden[i]];
-    await vaciarPendiente();
+    if (!await vaciarPendiente()) return;
     const nueva = await api.ordenarSecciones(asignatura, documento, orden);
     setSecciones(nueva);
     reubicar(nueva);
@@ -308,7 +330,7 @@ const Apuntes = memo(function Apuntes({ asignatura, documento }: { asignatura: s
 
   const eliminar = async (s: Seccion) => {
     if (!(await confirmar(`¿Eliminar la sección «${s.titulo}»?`, { texto: 'No se puede deshacer.', boton: 'Mover a la papelera', peligro: true }))) return;
-    await vaciarPendiente();
+    if (!await vaciarPendiente()) return;
     await api.eliminarSeccion(asignatura, documento, s.archivo);
     const lista = await cargarSecciones();
     if (activa === s.archivo) setActiva(lista[0]?.archivo ?? TODO);
@@ -433,11 +455,12 @@ const Apuntes = memo(function Apuntes({ asignatura, documento }: { asignatura: s
                 <History className="size-3.5" />
                 Historial
               </button>
-              <span className="flex items-center gap-1.5 text-xs text-texto-3">
+              <span role="status" className="flex items-center gap-1.5 text-xs text-texto-3">
                 {estadoGuardado === 'guardando' && <Loader2 className="size-3 animate-spin" />}
                 {estadoGuardado === 'guardado' && <Check className="size-3 text-ok" />}
                 {estadoGuardado === 'guardado' ? 'Guardado' : estadoGuardado === 'guardando' ? 'Guardando…' : 'Sin guardar'}
               </span>
+              {estadoGuardado === 'pendiente' && <Boton tam="sm" disabled={sectionLoading} onClick={() => void vaciarPendiente()}>Guardar ahora</Boton>}
             </div>
             {conflicto !== undefined && (
               <div className="flex items-center gap-3 border-b border-aviso/30 bg-aviso/10 px-4 py-2 text-[13px]">
@@ -471,7 +494,7 @@ const Apuntes = memo(function Apuntes({ asignatura, documento }: { asignatura: s
               {modo !== 'vista' && (
                 <div className={cx('min-w-0 bg-panel', modo === 'dividido' ? 'w-1/2 border-r border-borde' : 'flex-1')}>
                   <Suspense>
-                    <Editor key={activa} valor={texto} onCambio={alCambiar} />
+                    <Editor key={activa} valor={texto} onCambio={alCambiar} soloLectura={sectionLoading} />
                   </Suspense>
                 </div>
               )}

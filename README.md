@@ -7,7 +7,7 @@ Repository: https://github.com/gafapa/didavero
 
 ## Current distributions
 
-The working tree is `0.7.0-beta.1`, a Didavero Windows portable preview. The older public GitHub `v0.6.0` releases retain their Apuntes IA names and do not include all current curriculum/programme features. See the website download section for exact versions, platform availability and checksums. No signed-installer or cross-platform qualification is implied by a local Windows build.
+The working tree is `0.7.0-beta.2`, a Didavero preview. The older public GitHub `v0.6.0` releases retain their Apuntes IA names and do not include all current curriculum/programme features. See the website download section and [release notes](docs/releases/0.7.0-beta.2.md) for exact versions, platform availability and checksums. No signed-installer or cross-platform runtime qualification is implied by a successful package build.
 
 ## Features
 
@@ -66,7 +66,14 @@ Publishing targets the existing s1 static-site service on Oracle Cloud. Follow i
 - [Source management](docs/source-management.md)
 - [Exam adaptations](docs/exam-adaptations.md)
 - [AI engines](docs/engines.md)
-- [Security review follow-up](docs/security-review-follow-up-2026-10-19.md)
+- [Existing-note import](docs/importing-existing-notes.md)
+- [Editing, export reliability and next development priorities](docs/editing-and-export.md)
+- [Visual approval](docs/visual-approval.md)
+- [Context selection](docs/context-policy.md)
+- [Agent evidence policy](docs/agent-evidence-policy.md)
+- [Security and data integrity](docs/security.md)
+- [Performance](docs/performance.md)
+- [Repository layout, cleanup and validation](docs/maintenance.md)
 
 ## Licence
 

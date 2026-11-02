@@ -55,6 +55,7 @@ import { VistaPrevia } from './VistaPrevia';
 import { ExamAdaptationComparison } from './ExamAdaptationComparison';
 import { SelectorTipos } from './SelectorTipos';
 import { ActividadAgente, fechaCorta } from './flujo/comun';
+import { SerialTasks } from '../lib/serialTasks';
 
 const activo = (t: Trabajo) => t.estado === 'ejecutando' || t.estado === 'en-cola';
 
@@ -1327,13 +1328,37 @@ function VistaYExportar({ a, ex, onCambio, onOpenExam }: { a: string; ex: Examen
   const [modelo, setModelo] = useState<'A' | 'B'>('A');
   const [exportando, setExportando] = useState<string>();
   const [exportados, setExportados] = useState<Exportado[]>([]);
-  const mostrado = useMemo(() => (ex.opciones.modeloB && modelo === 'B' ? modeloB(ex) : ex), [ex, modelo]);
+  const optionSaves = useRef(new SerialTasks());
+  const optionDraft = useRef(ex.opciones);
+  const [previewOptions, setPreviewOptions] = useState(ex.opciones);
+  const [savingOptions, setSavingOptions] = useState(false);
+  const [optionsError, setOptionsError] = useState('');
+  useEffect(() => {
+    if (optionSaves.current.pending || optionsError) return;
+    optionDraft.current = ex.opciones;
+    setPreviewOptions(ex.opciones);
+  }, [ex.opciones, optionsError]);
+  const mostrado = useMemo(() => {
+    const previewExam = { ...ex, opciones: previewOptions };
+    return previewOptions.modeloB && modelo === 'B' ? modeloB(previewExam) : previewExam;
+  }, [ex, previewOptions, modelo]);
   const texto = useMemo(
     () => (vista === 'examen' ? examenAMarkdown(mostrado) : vista === 'solucionario' ? solucionarioAMarkdown(mostrado) : rubricaAMarkdown(mostrado)),
     [vista, mostrado],
   );
-  const op = ex.opciones;
-  const opcion = (cambios: Partial<OpcionesExamen>) => api.guardarExamen(a, ex.id, { opciones: cambios }).then(onCambio).catch((e) => avisar((e as Error).message, 'error'));
+  const op = previewOptions;
+  const opcion = (changes: Partial<OpcionesExamen>) => {
+    const snapshot = { ...optionDraft.current, ...changes };
+    optionDraft.current = snapshot;
+    setPreviewOptions(snapshot); setSavingOptions(true); setOptionsError('');
+    void optionSaves.current.run(async () => {
+      const saved = await api.guardarExamen(a, ex.id, { opciones: snapshot });
+      onCambio(saved);
+      if (optionSaves.current.pending === 1) setOptionsError('');
+    }).catch(error => { if (!optionSaves.current.pending) setOptionsError((error as Error).message); }).finally(() => {
+      setSavingOptions(optionSaves.current.pending > 0);
+    });
+  };
   const conHoja = ex.preguntas.some((p) => p.tipo === 'test' || p.tipo === 'multiple' || p.tipo === 'vf');
   const cargar = useCallback(() => {
     api.exportadosExamen(a, ex.id).then(setExportados).catch(() => {});
@@ -1343,6 +1368,7 @@ function VistaYExportar({ a, ex, onCambio, onOpenExam }: { a: string; ex: Examen
   const exportar = async (formato: 'pdf' | 'docx' | 'odt' | 'moodle') => {
     setExportando(formato);
     try {
+      await optionSaves.current.flush();
       if (formato === 'moodle') {
         const r = await api.exportarExamenMoodle(a, ex.id);
         avisar(`Exportado para Moodle: ${r.nombre}. En Moodle: Banco de preguntas › Importar › Formato GIFT.`, 'ok');
@@ -1372,7 +1398,7 @@ function VistaYExportar({ a, ex, onCambio, onOpenExam }: { a: string; ex: Examen
             ] as const
           ).map(([id, nombre, ayuda, activo, cambiar]) => (
             <label key={id} className={cx('flex cursor-pointer items-start gap-2.5 rounded-lg border px-3 py-2', activo ? 'border-acento/50 bg-acento-suave/50' : 'border-borde')}>
-              <input type="checkbox" className="mt-0.5 size-4 accent-[var(--acento)]" checked={activo} disabled={id === 'hojaRespuestas' && !conHoja} onChange={(e) => cambiar(e.target.checked)} />
+              <input type="checkbox" className="mt-0.5 size-4 accent-[var(--acento)]" checked={activo} disabled={!!exportando || (id === 'hojaRespuestas' && !conHoja)} onChange={(e) => cambiar(e.target.checked)} />
               <span>
                 <span className="block text-[13px] font-medium">{nombre}</span>
                 <span className="block text-[11.5px] text-texto-3">{ayuda}</span>
@@ -1380,6 +1406,8 @@ function VistaYExportar({ a, ex, onCambio, onOpenExam }: { a: string; ex: Examen
             </label>
           ))}
         </div>
+        {savingOptions && <p role="status" className="mt-3 text-sm text-texto-2">Guardando opciones… La exportación esperará al guardado.</p>}
+        {optionsError && <div role="alert" className="mt-3 flex flex-wrap items-center gap-2 text-sm text-error"><span>No se han guardado las opciones: {optionsError}</span><Boton tam="sm" disabled={savingOptions || !!exportando} onClick={() => opcion({})}>Reintentar guardado</Boton></div>}
       </Tarjeta>
 
       <Tarjeta titulo="Exportar" ayuda={op.modeloB ? 'Seis archivos: examen, solucionario y rúbrica de los modelos A y B' : 'Tres archivos: el examen, el solucionario y la rúbrica de corrección'}>

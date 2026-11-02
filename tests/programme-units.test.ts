@@ -202,6 +202,38 @@ test('late proposals and concurrent applies cannot replace newer teaching edits'
   assert.equal((await store.read()).revision, 4);
 });
 
+test('research and authoring jobs cannot overlap for the same programme purpose', async context => {
+  const { workflow, subject, project, queue } = await setup(context);
+  let ref = `research:${project.id}:classroom`;
+  queue.listar = (() => [{ id: 'occupied', asignatura: subject.id, paso: 'programacion', ref, estado: 'ejecutando' }]) as any;
+  await assert.rejects(workflow.generateProgramme(subject.id, project.id, 2), /investigando/);
+  await assert.rejects(workflow.helpProgrammeUnits(subject.id, project.id, 2), /investigando/);
+  ref = `${project.id}:classroom`;
+  await assert.rejects(workflow.researchProgramme(subject.id, project.id), /propuesta|elaborando/);
+  // Another project/purpose remains independent.
+  (workflow as any).lanzar = async () => ({ id: 'independent-job' });
+  await assert.doesNotReject(workflow.researchProgramme(subject.id, project.id, 'opposition'));
+  queue.listar = () => [];
+});
+
+test('unit proposals retain their research and context snapshot before explicit application', async context => {
+  const { workflow, subject, project, store, storage, programme } = await setup(context);
+  let launch: any;
+  (workflow as any).lanzar = async (value: unknown) => { launch = value; return { id: 'research-sensitive' }; };
+  await workflow.helpProgrammeUnits(subject.id, project.id, 2, '', 'classroom', 'u1');
+  const output = path.resolve(storage.dirAsignatura(subject.id), launch.post.datos.output);
+  await fs.mkdir(path.dirname(output), { recursive: true }); await fs.writeFile(output, JSON.stringify({ units: [unit()] }));
+  await (workflow as any).acceptProgrammeUnits({ id: 'research-sensitive', asignatura: subject.id }, launch.post.datos);
+  await storage.actualizarAsignatura(subject.id, { destinatarios: 'Changed audience after the request' });
+  await assert.rejects(workflow.applyProgrammeUnits(subject.id, project.id, 'classroom', 'research-sensitive', 2), /contexto.*cambiado|cambiado.*contexto/);
+  await storage.actualizarAsignatura(subject.id, { destinatarios: '' });
+  const researchStore = await workflow.programmeProjects(subject.id).research(project.id, 'classroom');
+  await researchStore.accept({ ...research, summary: 'Refreshed research after generation' }, 1, 'new-research');
+  await assert.rejects(workflow.applyProgrammeUnits(subject.id, project.id, 'classroom', 'research-sensitive', 2), /investigación|estructura investigada/);
+  assert.deepEqual((await store.read()).draft, programme);
+  assert.equal((await store.read()).revision, 2);
+});
+
 test('full-sequence help reuses the full curriculum and only replaces units after explicit application', async context => {
   const { workflow, subject, project, store, storage, programme, curriculum } = await setup(context);
   let launch: any;

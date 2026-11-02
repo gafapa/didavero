@@ -114,7 +114,7 @@ export class TeachingProgrammeStore {
       throw new CurriculumError('No se puede leer la programación. Conserva el archivo y recupera una copia válida.', 500);
     }
   }
-  save(value: unknown, expectedRevision: number, options: { confirmed?: unknown; jobId?: string } = {}) {
+  save(value: unknown, expectedRevision: number, options: { confirmed?: unknown; jobId?: string; researchRevision?: number } = {}) {
     const key = path.resolve(this.filename);
     const operation = (pending.get(key) ?? Promise.resolve()).catch(() => {}).then(() => withProgrammeDirectory(path.dirname(key), async () => {
       const state = await this.read();
@@ -127,6 +127,12 @@ export class TeachingProgrammeStore {
       if (existing && existing.curriculumVersionId !== curriculum.id) throw new CurriculumError('No cambies la versión de currículo de una programación existente.');
       const programme = parseProgramme(value, curriculum);
       if (programme.purpose !== this.purpose) throw new CurriculumError('Esta programación pertenece a otra finalidad.');
+      if (options.researchRevision !== undefined) {
+        const report = await new ProgrammeResearchStore(path.join(path.dirname(key), `research-${this.purpose}.json`), {
+          curriculumVersionId: curriculum.id, purpose: this.purpose, profile: curriculum.profile, contextFingerprint: '',
+        }).read();
+        if (!report.result || report.revision !== options.researchRevision) throw new CurriculumError('La investigación ha cambiado durante la elaboración. Se conserva el borrador y el resultado del trabajo.', 409);
+      }
       if (options.confirmed !== undefined) {
         if (options.confirmed !== true) throw new CurriculumError('Confirma la revisión de la programación.');
         const issues = programmeIssues(programme, curriculum);

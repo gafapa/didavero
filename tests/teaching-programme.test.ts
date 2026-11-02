@@ -16,6 +16,7 @@ import { ProgrammeProjects } from '../server/programmeProjects';
 import { exportProgramme } from '../server/exportProgramme';
 import { existsSync } from 'node:fs';
 import JSZip from 'jszip';
+import { defaultProgrammePresentation } from '../shared/programmePresentation';
 
 const fixture: CurriculumDraft = {
   profile: { stage: 'eso', territory: 'Galicia', academicYear: '2026-2027', subject: 'Synthetic programme subject', course: '1', scope: 'course', model: 'general', qualification: '', moduleCode: '' },
@@ -142,12 +143,81 @@ test('programme generation uses one existing role, no web search, and rejects la
   changedStructure.researchedSections![0].title = 'A model-invented replacement heading';
   await fs.writeFile(filename, JSON.stringify(changedStructure));
   await assert.rejects((workflow as any).acceptProgramme(job, launch.post.datos), /cambiado los apartados/);
+  for (const incomplete of [
+    { ...programme, units: [] },
+    { ...programme, units: [{ ...programme.units[0], hours: 11 }] },
+    { ...programme, researchedSections: programme.researchedSections!.map(section => ({ ...section, text: '' })) },
+  ]) {
+    await fs.writeFile(filename, JSON.stringify(incomplete));
+    await assert.rejects((workflow as any).acceptProgramme(job, launch.post.datos), /unidades|horas|apartados/);
+    assert.equal((await store.read()).revision, 2, 'Invalid generation must not replace the teacher draft');
+  }
   await fs.writeFile(filename, JSON.stringify(programme));
+  await storage.actualizarAsignatura(subject.id, { contexto: 'Changed subject context during generation' });
+  await assert.rejects((workflow as any).acceptProgramme(job, launch.post.datos), /contexto.*cambiado|cambiado.*contexto/);
+  await storage.actualizarAsignatura(subject.id, { contexto: '' });
   await (workflow as any).acceptProgramme(job, launch.post.datos);
   assert.equal((await store.read()).revision, 3);
   await (workflow as any).acceptProgramme(job, launch.post.datos);
   assert.equal((await store.read()).revision, 3);
   await assert.rejects((workflow as any).acceptProgramme({ ...job, id: 'late-job' }, launch.post.datos), { statusCode: 409 });
+  const configured = { ...programme, presentation: { ...defaultProgrammePresentation(), minUnits: 2 } };
+  await store.save(configured, 3);
+  await workflow.generateProgramme(subject.id, project.id, 4);
+  const configuredOutput = path.join(storage.dirAsignatura(subject.id), launch.post.datos.output);
+  await fs.writeFile(configuredOutput, JSON.stringify(configured));
+  const configuredJob = { ...job, id: 'configured-generation' };
+  await assert.rejects((workflow as any).acceptProgramme(configuredJob, launch.post.datos), /mínimo de unidades/);
+  const partial = { ...configured, units: ['first', 'second'].map(id => ({ ...programme.units[0], id, hours: 6, criterionIds: [] })) };
+  await fs.writeFile(configuredOutput, JSON.stringify(partial));
+  const summary = await (workflow as any).acceptProgramme(configuredJob, launch.post.datos);
+  assert.match(summary, /aspectos pendientes/);
+  assert.equal((await store.read()).revision, 5, 'Useful partial coverage remains a reviewable draft');
+  const noRequirements = { ...partial, sections: { ...partial.sections, requirements: '', selectionRequirements: '' } };
+  await store.save(noRequirements, 5); await workflow.generateProgramme(subject.id, project.id, 6);
+  const requirementsOutput = path.join(storage.dirAsignatura(subject.id), launch.post.datos.output);
+  for (const key of ['requirements', 'selectionRequirements']) {
+    await fs.writeFile(requirementsOutput, JSON.stringify({ ...noRequirements, sections: { ...noRequirements.sections, [key]: 'An invented obligation without research evidence' } }));
+    await assert.rejects((workflow as any).acceptProgramme({ ...job, id: 'invented-requirements' }, launch.post.datos), /sin requisitos documentados/);
+    assert.equal((await store.read()).revision, 6);
+  }
+});
+
+test('programme queue processes a synthetic CLI result and preserves the draft after invalid output', async context => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'apuntes-programme-queue-')), storage = new Almacen(path.join(directory, 'data')); await storage.iniciar();
+  const subject = await storage.crearAsignatura({ nombre: 'Synthetic queued programme', etapa: 'eso', curso: '1' });
+  const { programme } = await setup(storage.dirAsignatura(subject.id));
+  const driver = path.join(directory, 'fixture-engine.mjs');
+  await fs.writeFile(driver, `import fs from 'node:fs';
+const prompt = fs.readFileSync(0, 'utf8');
+const output = /Escribe SOLO el JSON completo en esta ruta ABSOLUTA exacta: (.+?\\.json)/.exec(prompt)?.[1];
+if (!output) throw Error('Missing requested output path');
+fs.writeFileSync(output, fs.readFileSync('queue-fixture.json'));
+console.log(JSON.stringify({type:'system',subtype:'init',session_id:'synthetic-programme-session',model:'fixture'}));
+console.log(JSON.stringify({type:'result',is_error:false,result:'Synthetic CLI finished',usage:{input_tokens:10,output_tokens:5}}));
+`);
+  const executable = path.join(directory, process.platform === 'win32' ? 'fixture-engine.cmd' : 'fixture-engine.sh');
+  await fs.writeFile(executable, process.platform === 'win32' ? `@echo off\r\n"${process.execPath}" "${driver}" %*\r\n` : `#!/bin/sh\nexec '${process.execPath}' '${driver}' "$@"\n`, { mode: 0o700 });
+  const previous = process.env.APUNTES_MOTOR_CLAUDE; process.env.APUNTES_MOTOR_CLAUDE = executable;
+  const queue = new Cola(1, path.join(directory, 'jobs'));
+  context.after(async () => { queue.detenerTodo(); await queue.flush(); if (previous === undefined) delete process.env.APUNTES_MOTOR_CLAUDE; else process.env.APUNTES_MOTOR_CLAUDE = previous; await fs.rm(directory, { recursive: true, force: true }); });
+  const workflow = new Flujo({ almacen: () => storage, cola: queue, ajustes: () => ({ carpetaDatos: storage.raiz, maxSimultaneos: 1, motorPorDefecto: 'claude', asistenteCompletado: true, agentes: {} }), motoresListos: () => new Set() });
+  const project = await workflow.programmeProjects(subject.id).create({ title: programme.title, purpose: 'classroom' });
+  const store = await workflow.programmeStore(subject.id, project.id);
+  await store.save(programme, 1); await (await workflow.programmeProjects(subject.id).research(project.id)).accept(researchResult, 0, 'research-fixture');
+  const fixturePath = path.join(storage.dirAsignatura(subject.id), 'queue-fixture.json');
+  const waitFor = async (job: Awaited<ReturnType<typeof workflow.generateProgramme>>) => {
+    const deadline = Date.now() + 60000;
+    while (['en-cola', 'ejecutando'].includes(job.estado)) { assert.ok(Date.now() < deadline, 'Synthetic generation timed out'); await new Promise(resolve => setTimeout(resolve, 50)); }
+  };
+  await fs.writeFile(fixturePath, JSON.stringify(programme));
+  const valid = await workflow.generateProgramme(subject.id, project.id, 2); await waitFor(valid);
+  assert.equal(valid.estado, 'ok'); assert.equal((await store.read()).revision, 3);
+  const preserved = await fs.readFile(store.filename, 'utf8');
+  await fs.writeFile(fixturePath, JSON.stringify({ ...programme, units: [] }));
+  const invalid = await workflow.generateProgramme(subject.id, project.id, 3); await waitFor(invalid);
+  assert.equal(invalid.estado, 'error'); assert.match(invalid.resultado!, /no contiene unidades/);
+  assert.equal(await fs.readFile(store.filename, 'utf8'), preserved);
 });
 test('programme HTTP flow saves, reviews and exports while enforcing strict references and revisions', async context => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'apuntes-programme-http-')), root = path.join(directory, 'data');
@@ -216,6 +286,8 @@ test('review captures the exact researched outline and sources without changing 
   await store.save({ ...programme, title: 'Later draft' }, 2);
   assert.deepEqual((await store.read()).reviewed, copy);
   await assert.rejects(store.save(programme, 3, { confirmed: true }), { statusCode: 409 });
+  await assert.rejects(store.save(programme, 3, { jobId: 'stale-research-write', researchRevision: 1 }), { statusCode: 409 });
+  assert.equal((await store.read()).revision, 3, 'Research is checked inside the serialized project write');
   const markdown = programmeMarkdown(copy!.programme, await store.curriculum(programme.curriculumVersionId), copy!.research);
   assert.match(markdown, /Synthetic researched outline/); assert.doesNotMatch(markdown, /Later research summary/);
 });

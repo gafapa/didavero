@@ -81,8 +81,13 @@ jobs:
       - name: Publish after all platform builds pass
         shell: bash
         run: |
-          release_tag="v$(node -p "require('./package.json').version")"
-          gh release edit "$release_tag" --draft=false --latest
+          release_version="$(node -p "require('./package.json').version")"
+          release_tag="v$release_version"
+          if [[ "$release_version" == *-* ]]; then
+            gh release edit "$release_tag" --draft=false --prerelease --latest=false
+          else
+            gh release edit "$release_tag" --draft=false --prerelease=false --latest
+          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}

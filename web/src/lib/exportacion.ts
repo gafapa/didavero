@@ -8,6 +8,7 @@ import { dibujarMolecula, resolverMolecula } from './moleculas';
 import { PATRON_BLOQUE, claveBloque, type TipoBloque } from '../../../shared/bloques';
 import { dibujarBloque } from './bloques';
 import { registrarIconos } from './mermaidIconos';
+import { flushPendingEdits } from './pendingEdits';
 
 let contador = 0;
 
@@ -136,6 +137,7 @@ export async function bloquesAPng(textos: string[], base: string): Promise<Recor
 }
 
 export async function exportarDocumento(asignatura: string, documento: string, opciones: OpcionesExportacion) {
+  await flushPendingEdits(`${asignatura}/${documento}`);
   const secciones = await api.secciones(asignatura, documento);
   const textos = await Promise.all(secciones.map((s) => api.leerSeccion(asignatura, documento, s.archivo).then((r) => r.contenido)));
   const base = urlDatos(asignatura, 'documentos', documento);

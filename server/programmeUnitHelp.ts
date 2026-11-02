@@ -31,6 +31,7 @@ export class ProgrammeUnitHelpStore {
       if (stat.size > 2 * 1024 * 1024) throw new Error('size');
       const value = JSON.parse(await fs.readFile(this.filename, 'utf8')) as ProgrammeUnitProposal;
       if (!value || typeof value.jobId !== 'string' || !Number.isSafeInteger(value.expectedRevision) || value.expectedRevision < 0 || !Array.isArray(value.units) || typeof value.createdAt !== 'string' || typeof value.curriculumVersionId !== 'string' || !['classroom', 'opposition'].includes(value.purpose) || (value.unitId !== undefined && typeof value.unitId !== 'string')) throw new Error('schema');
+      if ((value.researchRevision !== undefined && (!Number.isSafeInteger(value.researchRevision) || value.researchRevision < 0)) || (value.contextFingerprint !== undefined && !/^[a-f0-9]{64}$/.test(value.contextFingerprint))) throw new Error('snapshot');
       await this.validate?.(value);
       return value;
     } catch (error) {

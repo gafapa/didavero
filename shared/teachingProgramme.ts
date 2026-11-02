@@ -37,6 +37,7 @@ export interface TeachingUnit {
 export interface ProgrammeUnitProposal {
   jobId: string; expectedRevision: number; curriculumVersionId: string; purpose: ProgrammePurpose;
   unitId?: string; units: TeachingUnit[]; createdAt: string; applied?: boolean;
+  researchRevision?: number; contextFingerprint?: string;
 }
 export interface TeachingProgramme {
   purpose: ProgrammePurpose;

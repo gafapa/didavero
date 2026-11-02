@@ -1,7 +1,7 @@
 // Editor Markdown basado en CodeMirror 6.
 import { useEffect, useRef } from 'react';
 import { EditorView, keymap, placeholder as cmPlaceholder, drawSelection, highlightActiveLine } from '@codemirror/view';
-import { Annotation, EditorState } from '@codemirror/state';
+import { Annotation, Compartment, EditorState } from '@codemirror/state';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { languages } from '@codemirror/language-data';
@@ -45,6 +45,7 @@ export function Editor({
   const contenedor = useRef<HTMLDivElement>(null);
   const vista = useRef<EditorView>(null);
   const onCambioRef = useRef(onCambio);
+  const readOnlyMode = useRef(new Compartment());
   onCambioRef.current = onCambio;
 
   useEffect(() => {
@@ -62,7 +63,8 @@ export function Editor({
           syntaxHighlighting(resaltado),
           tema,
           cmPlaceholder('Escribe aquí o pide a la IA que redacte esta sección…'),
-          EditorState.readOnly.of(!!soloLectura),
+          readOnlyMode.current.of([EditorState.readOnly.of(!!soloLectura), EditorView.editable.of(!soloLectura)]),
+          EditorView.contentAttributes.of({ 'aria-label': 'Contenido de la sección' }),
           EditorView.updateListener.of((u) => {
             if (u.docChanged && !u.transactions.some((tr) => tr.annotation(externo))) {
               onCambioRef.current(u.state.doc.toString());
@@ -86,6 +88,12 @@ export function Editor({
       v.dispatch({ changes: { from: 0, to: actual.length, insert: valor }, annotations: externo.of(true) });
     }
   }, [valor]);
+
+  useEffect(() => {
+    vista.current?.dispatch({ effects: readOnlyMode.current.reconfigure([
+      EditorState.readOnly.of(!!soloLectura), EditorView.editable.of(!soloLectura),
+    ]) });
+  }, [soloLectura]);
 
   return <div ref={contenedor} className="h-full overflow-hidden" />;
 }
